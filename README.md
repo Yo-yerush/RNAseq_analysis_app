@@ -1,155 +1,208 @@
 # RNA-seq Analysis Dashboard
 
-A local R Shiny dashboard for Arabidopsis RNA-seq differential expression analysis and downstream visualization.
+A local R Shiny dashboard for RNA-seq differential expression analysis, annotation building, and downstream visualization.
 
 **Author:** Yonatan Yerushalmy  
 Plant's metabolism and molecular genetic lab, Prof. Rachel Amir group
 
-**Source Code & Repository:**  
-You can download, edit, and access the raw files and source code for this project from its GitHub repository:  
+**Repository:**  
 [https://github.com/Yo-yerush/RNAseq_analysis_app.git](https://github.com/Yo-yerush/RNAseq_analysis_app.git)
 
-## File structure
+## File Structure
 
-- `app_140526/` – contains all the R scripts and app data:
-  - `app.R` – main Shiny dashboard.
-  - `R/helpers.R` – core functions: DESeq2 pipeline, volcano/MA/PCA plots, GO enrichment, GO offspring summaries, abiotic stress enrichment, REVIGO-like semantic reduction.
-  - `install_packages.R` – installs all required CRAN and Bioconductor packages.
-  - `launch_app.R` – launches the Shiny app from R.
-  - `example_data/all_genes_results_mto1_vs_wt.csv` – example DE results table (mto1 vs WT), loaded by default.
-  - `legacy_scripts/` – original analysis scripts kept as reference and loaded by the app.
-  - `description_files/` – annotation files (Methylome.At, TAIR10 transposable elements).
-- `install.bat` – Windows launcher that installs missing packages on first run and then opens the app.
-- `RA_RNAseq_analysis_app.bat` – fast launcher for subsequent runs (no install step).
+- `app_140526/` - main app folder:
+  - `app.R` - Shiny dashboard UI/server.
+  - `R/helpers.R` - DESeq2 pipeline, DE plots, GO/MSigDB helpers, annotation utilities.
+  - `R/build_uniprot_description_file.R` - UniProt annotation builder, including Ensembl/SYMBOL/ENTREZID/TAIR ID support through OrgDb where available.
+  - `legacy_scripts/kegg_analysis.R` - KEGG enrichment and KEGG ID mapping helpers.
+  - `legacy_scripts/volcano_TEG_overlap_with_TE_families_RNAseq.R` - Arabidopsis TE superfamily enrichment and volcano helpers.
+  - `install_packages.R` - installs required CRAN and Bioconductor packages.
+  - `launch_app.R` - launches the Shiny app from R.
+  - `example_data/` - bundled example DE table.
+  - `description_files/` - optional local data files. Default Arabidopsis/human annotation tables and TAIR10 TE metadata are loaded from GitHub when internet is available.
+- `install.bat` - Windows first-run launcher that installs missing packages.
+- `RA_RNAseq_analysis_app.bat` - faster launcher for later runs.
 
-## How to run on Windows
+## How To Run On Windows
 
-1. Install R for Windows (≥ 4.2 recommended).
-2. Extract the folder, ensuring the `.bat` files are in the main directory and the app files are inside the `app_140526` folder.
-3. **First time:** double-click `install.bat`. This installs all required packages and launches the app. May take several minutes the first time.
-4. **Subsequent runs:** double-click `RA_RNAseq_analysis_app.bat` (skips the install step, starts faster).
+1. Install R for Windows, preferably R 4.2 or newer.
+2. Extract the project folder.
+3. First time: double-click `install.bat`.
+4. Later runs: double-click `RA_RNAseq_analysis_app.bat`.
 
-If `Rscript.exe was not found in PATH`, add your R `bin` folder to the Windows PATH. It is usually:
+If `Rscript.exe was not found in PATH`, add your R `bin` folder to PATH, usually:
 
 ```text
 C:\Program Files\R\R-4.x.x\bin
 ```
 
-## Data input
+## Data Input
 
-### Option 1: Load a DE results CSV / TSV
+### Upload DE Results
 
-Upload any CSV or TSV file. The app will auto-detect columns by name. If the standard names (`gene_id`, `log2FoldChange`, `padj`) are not found, the app automatically treats the **first three columns** as gene ID, log2 fold change, and adjusted p-value respectively.
+Upload CSV, TSV, or TXT differential expression results. The app auto-detects comma and tab delimiters.
 
-**Recommended columns:**
+Recommended columns:
 
 | Column | Description |
 |--------|-------------|
-| `gene_id` | TAIR gene identifier |
+| `gene_id` | Gene identifier, for example TAIR, Ensembl, Entrez, or symbol |
 | `log2FoldChange` | log2 fold change |
-| `padj` | adjusted p-value (BH/FDR) |
-| `pValue` | raw p-value (optional) |
-| `baseMean` | mean normalized counts – required for MA plot |
-| `GO.biological.process` | GO BP terms – used by GO offspring/stress tabs |
+| `padj` | adjusted p-value |
+| `pValue` | raw p-value, optional |
+| `baseMean` | mean normalized count, needed for MA plots |
 
-### Option 2: Run DESeq2 from RSEM `.genes.results` files
+If standard column names are not found, the app treats the first three columns as `gene_id`, `log2FoldChange`, and `padj`.
 
-Point the app at a folder containing files ending in `*.genes.results`. The app:
+### Run DESeq2 From RSEM
 
-1. Scans the folder and creates an editable `colData` table.
-2. You can edit the `condition` column directly in the app, or upload a separate colData CSV.
-3. Select treatment vs. control, then click **Run DESeq2**.
+Point the app to a folder containing `*.genes.results` files. The app scans sample IDs and creates editable colData.
 
-colData file formats supported:
-- New: `sample_id`, `condition`, optional `sample_label`
-- Legacy: `x`, `sample`, `exp`
+colData supports CSV, TSV, and TXT with comma or tab delimiters.
 
-`sample_label` values are used as labels in the PCA plot.
+Supported column patterns:
 
-## Tabs and features
+| New style | Legacy style |
+|----------|--------------|
+| `sample_id` | `x` / `file` / `sample` |
+| `condition` | `exp` / `group` / `genotype` / `treatment` |
+| `sample_label` optional | `sample` / `label` optional |
+
+Extra colData columns are preserved. You can choose one extra effect column for DESeq2:
+
+- No extra effect: `~ condition`
+- Adjusted model: `~ condition + effect`
+- Interaction model: `~ condition + effect + condition:effect`
+
+The Data tab prints the exact design formula and contrast used.
+
+When running DESeq2, the selected treatment/control comparison still drives the main DE table and all downstream analyses. The app also extracts every condition level versus the selected control from the same DESeq2 model. The Data tab shows a Venn diagram of shared significant gene IDs across comparisons, with display controls for the Venn colors, and provides a combined all-comparisons CSV download.
+
+## Organism And Gene ID Settings
+
+The **Organism annotations** tab controls organism-wide settings:
+
+- Search/select organism name or NCBI taxonomy ID.
+- Choose **Gene ID type**: `TAIR`, `ENTREZID`, `SYMBOL`, or `ENSEMBL`.
+- The Gene ID type is used by UniProt annotation building, GO, KEGG, and MSigDB/Hallmark where relevant.
+
+The UniProt builder can create an annotation table for the loaded DE gene IDs. For human Ensembl IDs, for example `ENSG00000141510`, the builder uses the selected OrgDb, such as `org.Hs.eg.db`, to bridge Ensembl IDs to UniProt annotations.
+
+Annotation table downloads include the organism name and tax ID in the filename.
+
+## Tabs And Features
 
 ### Data
-- Summary of loaded genes (up/down/NS counts, presence of baseMean/PCA).
-- Editable colData table (RSEM mode).
-- Preview of the DE table (up to 5000 rows).
+
+- Summary of loaded genes.
+- Editable colData in RSEM mode.
+- All condition-vs-control DESeq2 results with a shared significant-gene Venn diagram.
+- DE table preview.
 - Download DE table and normalized counts.
 
-### DE plots
-- **Volcano plot** – all genes colored by DE class (up/down/NS).
-- **MA plot** – requires `baseMean` column.
-- **PCA plot** – available after running DESeq2 from RSEM files.
-  - Default shows only the treatment and control conditions used for the comparison.
-  - Add/remove conditions using the "PCA conditions" selector in the sidebar.
-  - Toggle sample name labels on/off.
-  - Labels use `sample_label` column if available; otherwise falls back to sample ID.
+### DE Plots
 
-### GO analysis
-- **Enrichment** – topGO enrichment (weight01, classic, or elim algorithms; Fisher or KS statistic).
-- **REVIGO-like reduction** – local semantic reduction using `rrvgo` (no internet upload needed).
-- **GO offspring** – summarizes custom parent GO term sets with offspring genes.
-- **Abiotic stress** – Fisher's exact test against curated stress GO parent terms.
+- Volcano plot.
+- MA plot, requires `baseMean`.
+- PCA plot after running DESeq2 from RSEM files.
+- PCA condition selector and sample-label toggle.
 
-### KEGG analysis
-- Wilcoxon rank-sum enrichment against Arabidopsis KEGG pathways.
+### Organism Annotations
+
+- Load a manual annotation CSV/TSV/TXT.
+- Build annotation table from UniProt.
+- Select organism and Gene ID type.
+- Preview and download current annotation source.
+
+### GO Analysis
+
+- topGO enrichment with `weight01`, `classic`, or `elim`.
+- Fisher or KS statistic.
+- REVIGO-like local semantic reduction using `rrvgo`.
+- GO offspring summaries for custom parent GO terms.
+- Abiotic stress GO enrichment.
+
+GO display cutoff, ontology, and top-N controls appear in the sidebar only while on the GO tab.
+
+### MSigDB/Hallmark
+
+- Hallmark over-representation analysis using `msigdbr`.
+- Supports up, down, or all significant genes.
+- Uses the selected organism/species and Gene ID type where available.
+- Bubble plot and downloadable results table.
+
+`msigdbr` may download/cache MSigDB data on first use.
+
+### KEGG Analysis
+
+- KEGG enrichment using `KEGGREST`.
+- The app downloads KEGG pathway gene sets by KEGG organism code, for example `ath` or `hsa`, and caches them locally.
+- For human Ensembl data, KEGG uses Entrez/numeric IDs, so the app maps selected Gene ID type to Entrez IDs through the selected OrgDb before matching pathways.
 - Bubble plot and enrichment table.
-- **Pathview** – generates pathway maps colored by log2FC (requires internet access).
+- Pathview pathway maps colored by log2FoldChange. Pathview also uses the same ID mapping, so Ensembl human genes can be colored correctly after mapping.
 
-### TE analysis
-- **Enrichment** – Wilcoxon rank-sum test to identify overrepresented TE superfamilies in DE genes.
-- **Volcano plot** – volcano showing genes overlapping selected TE superfamilies.
+### PMN (plants)
 
-### Gene groups
-- Built-in curated gene sets (RdDM pathway, histone methyltransferases, seed-specific genes, metabolic pathways, and more).
-- Volcano plot shows only the genes in the selected group, colored by DE status (same color scheme as main volcano).
-- Reference lists are downloaded from GitHub on first click; subsequent groups load from cache.
+- Plant Metabolic Network pathway enrichment for plant Cyc databases, for example `AraCyc`, `OryzaCyc`, `CornCyc`, and `TomatoCyc`.
+- The PMN Cyc DB is auto-selected from the organism in the Organism annotations tab when a known plant mapping exists.
+- Downloads PMN tab-delimited pathway tables from the public PMN file bucket when PMN analysis or pathway lookup is run.
+- PMN matching usually expects the organism locus IDs used by that Cyc database, such as TAIR locus IDs for AraCyc.
+- Bubble plot and downloadable enrichment table.
+
+### TE Analysis
+
+- Arabidopsis-specific TE superfamily enrichment and TE volcano plots.
+- Uses default Arabidopsis annotation and TAIR10 TE metadata from GitHub:
+  - `https://github.com/Yo-yerush/RA_lab_db/raw/refs/heads/main/description_files/At_custom_description_file.csv.gz`
+  - `https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/TAIR10_Transposable_Elements.txt`
+
+Human or other organism TE analysis requires a compatible TE-level annotation table or TE quantification output, such as RepeatMasker/TEtranscripts-derived families. Standard human Ensembl gene-level DE tables do not directly contain TE family assignments.
+
+### Gene Groups
+
+- Curated built-in gene sets.
+- Group-specific volcano plot.
+- Reference data is downloaded from GitHub on first use and cached in-session.
 
 ### Search Annotations
-- Full-text search across all annotation columns in the loaded DE table.
-- Supports AND (space) and OR (|) logic. Column-level filters available in the table.
+
+- Full-text search across annotation columns.
+- Supports AND-style space-separated terms and OR with `|`.
 
 ### Log / Help
-- **Log** tab: timestamped record of all actions performed in the session (data loaded, analyses run, errors).
-- **Help** tab: usage notes and AI developer instructions for future feature additions and debugging.
 
-## Sidebar controls
+- Session log.
+- Developer notes and app usage help.
 
-### 1. Data input
-Choose between the example CSV, upload a custom CSV/TSV, or run DESeq2 from RSEM files.
+## Sidebar Controls
 
-### 2. Thresholds
-- **padj cutoff** – significance threshold for DE classification.
-- **|log2FC| cutoff** – fold-change threshold.
-- **GO p-value cutoff** – filters the GO bubble plot and table (without re-running).
-- **GO ontology** – BP, MF, or CC.
-- **Top GO terms** – number of terms shown in the bubble plot.
+- Data input mode and DESeq2/RSEM controls.
+- Significance thresholds: `padj` and `|log2FC|`.
+- Tab-specific plot size controls.
+- GO and Hallmark filters only appear on their relevant tabs.
+- Global point size, alpha, and colors.
 
-### 3. Plot Settings
-- Per-tab width/height sliders for each plot.
-- **PCA options** (shown when on the DE plots tab): label toggle, condition multi-select.
-- **Point size** and **Point alpha** (global).
-- **Point colors** – click the color swatches to open a visual color picker for Upregulated, Downregulated, and Not significant points. Applied to volcano, MA, and gene group plots.
+The upregulated/downregulated/not-significant colors are used across DE plots and enrichment visualizations where relevant, including GO, KEGG, MSigDB/Hallmark, Pathview, and gene group plots.
 
 ## Notes
 
-- Designed primarily for Arabidopsis TAIR IDs.
-- GO analysis uses `topGO`, `org.At.tair.db`, and `GO.db`.
-- REVIGO-like analysis uses the `rrvgo` package locally (no data is uploaded externally).
-- PCA requires the count matrix and is only available after running DESeq2 from RSEM files.
-- MA plot requires `baseMean`; the example CSV does not include it.
-- No results are saved automatically — use the download buttons on each tab.
+- The bundled TE workflow is Arabidopsis-specific.
+- GO requires the selected OrgDb package to be installed, for example `org.At.tair.db` or `org.Hs.eg.db`.
+- KEGG and Pathview require internet access when KEGG data or pathway images are not cached.
+- UniProt annotation building requires internet access.
+- PCA requires count data and is available only after running DESeq2 from RSEM files.
+- No results are saved automatically. Use the download buttons.
 
-## Troubleshooting: R not found by the launcher
+## Troubleshooting R Not Found
 
-The launcher searches for `Rscript.exe` in PATH and in common Windows install locations:
+The launcher searches for `Rscript.exe` in PATH and common Windows install locations:
 
 - `C:\Program Files\R\...`
 - `C:\Program Files (x86)\R\...`
 - `%LOCALAPPDATA%\Programs\R\...`
 
-If it still cannot find R, run `diagnose_R_installation.bat`, then open `install_RA_RNAseq_analysis_app.bat` in Notepad and set the path manually near the top:
+If it still cannot find R, run `app_140526/diagnose_R_installation.bat`, then edit the launcher path manually if needed:
 
 ```bat
 set "RSCRIPT=C:\Program Files\R\R-4.5.0\bin\Rscript.exe"
 ```
-
-Save and run again.
