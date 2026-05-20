@@ -151,7 +151,7 @@ GO display cutoff, ontology, and top-N controls appear in the sidebar only while
 - The PMN Cyc DB is auto-selected from the organism in the Organism annotations tab when a known plant mapping exists.
 - Downloads PMN tab-delimited pathway tables from the public PMN file bucket when PMN analysis or pathway lookup is run.
 - PMN matching usually expects the organism locus IDs used by that Cyc database, such as TAIR locus IDs for AraCyc.
-- Bubble plot and downloadable enrichment table.
+- Bubble plot, downloadable enrichment table, pathway-gene lookup table, and selected-pathway volcano plot.
 
 ### Genes Groups
 
