@@ -54,6 +54,8 @@ Recommended columns:
 
 If standard column names are not found, the app treats the first three columns as `gene_id`, `log2FoldChange`, and `padj`.
 
+After loading the table, the app auto-detects common `gene_id` formats such as TAIR, Ensembl, RefSeq, Entrez, UniProt, and gene symbols, then updates the Gene ID type in the Organism annotations tab. You can still change it manually.
+
 ### Run DESeq2 From RSEM
 
 Point the app to a folder containing `*.genes.results` files. The app scans sample IDs and creates editable colData.
@@ -122,7 +124,7 @@ Annotation table downloads include the organism name and tax ID in the filename.
 - Fisher or KS statistic.
 - REVIGO-like local semantic reduction using `rrvgo`.
 - GO offspring summaries for custom parent GO terms.
-- Abiotic stress GO enrichment.
+- Abiotic stress (plants) GO enrichment.
 
 GO display cutoff, ontology, and top-N controls appear in the sidebar only while on the GO tab.
 
