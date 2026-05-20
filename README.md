@@ -12,7 +12,7 @@ Plant's metabolism and molecular genetic lab, Prof. Rachel Amir group
 
 - `app_140526/` - main app folder:
   - `app.R` - Shiny dashboard UI/server.
-  - `R/helpers.R` - DESeq2 pipeline, DE plots, GO/MSigDB helpers, annotation utilities.
+  - `R/helpers.R` - DESeq2 pipeline, DE result plots, GO/MSigDB helpers, annotation utilities.
   - `R/build_uniprot_description_file.R` - UniProt annotation builder, including Ensembl/SYMBOL/ENTREZID/TAIR ID support through OrgDb where available.
   - `legacy_scripts/kegg_analysis.R` - KEGG enrichment and KEGG ID mapping helpers.
   - `legacy_scripts/volcano_TEG_overlap_with_TE_families_RNAseq.R` - Arabidopsis TE superfamily enrichment and volcano helpers.
@@ -92,20 +92,15 @@ Annotation table downloads include the organism name and tax ID in the filename.
 
 ## Tabs And Features
 
-### Data
+### Data Input
 
 - Summary of loaded genes.
 - Editable colData in RSEM mode.
 - All condition-vs-control DESeq2 results with a shared significant-gene Venn diagram.
-- DE table preview.
-- Download DE table and normalized counts.
-
-### DE Plots
-
-- Volcano plot.
-- MA plot, requires `baseMean`.
 - PCA plot after running DESeq2 from RSEM files.
 - PCA condition selector and sample-label toggle.
+- DE table preview.
+- Download DE table and normalized counts.
 
 ### Organism Annotations
 
@@ -113,6 +108,13 @@ Annotation table downloads include the organism name and tax ID in the filename.
 - Build annotation table from UniProt.
 - Select organism and Gene ID type.
 - Preview and download current annotation source.
+
+### DE Results
+
+- Volcano plot.
+- MA plot, requires `baseMean`.
+- Full-text search across annotation columns.
+- Supports AND-style space-separated terms and OR with `|`.
 
 ### GO Analysis
 
@@ -124,6 +126,14 @@ Annotation table downloads include the organism name and tax ID in the filename.
 
 GO display cutoff, ontology, and top-N controls appear in the sidebar only while on the GO tab.
 
+### KEGG Analysis
+
+- KEGG enrichment using `KEGGREST`.
+- The app downloads KEGG pathway gene sets by KEGG organism code, for example `ath` or `hsa`, and caches them locally.
+- For human Ensembl data, KEGG uses Entrez/numeric IDs, so the app maps selected Gene ID type to Entrez IDs through the selected OrgDb before matching pathways.
+- Bubble plot and enrichment table.
+- Pathview pathway maps colored by log2FoldChange. Pathview also uses the same ID mapping, so Ensembl human genes can be colored correctly after mapping.
+
 ### MSigDB/Hallmark
 
 - Hallmark over-representation analysis using `msigdbr`.
@@ -133,14 +143,6 @@ GO display cutoff, ontology, and top-N controls appear in the sidebar only while
 
 `msigdbr` may download/cache MSigDB data on first use.
 
-### KEGG Analysis
-
-- KEGG enrichment using `KEGGREST`.
-- The app downloads KEGG pathway gene sets by KEGG organism code, for example `ath` or `hsa`, and caches them locally.
-- For human Ensembl data, KEGG uses Entrez/numeric IDs, so the app maps selected Gene ID type to Entrez IDs through the selected OrgDb before matching pathways.
-- Bubble plot and enrichment table.
-- Pathview pathway maps colored by log2FoldChange. Pathview also uses the same ID mapping, so Ensembl human genes can be colored correctly after mapping.
-
 ### PMN (plants)
 
 - Plant Metabolic Network pathway enrichment for plant Cyc databases, for example `AraCyc`, `OryzaCyc`, `CornCyc`, and `TomatoCyc`.
@@ -148,6 +150,16 @@ GO display cutoff, ontology, and top-N controls appear in the sidebar only while
 - Downloads PMN tab-delimited pathway tables from the public PMN file bucket when PMN analysis or pathway lookup is run.
 - PMN matching usually expects the organism locus IDs used by that Cyc database, such as TAIR locus IDs for AraCyc.
 - Bubble plot and downloadable enrichment table.
+
+### Genes Groups
+
+- **Gene families - enrichment** sub-tab: tests significant genes against families and shows a top-10 dotplot plus a downloadable table.
+- **Gene families** sub-tab: selected-family volcano plots and tables. Arabidopsis uses the RA lab database file:
+  - `https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/gene_families_sep_29_09_update.txt`
+- Human uses HGNC `gene_has_family.csv` plus `family.csv`; `family.csv$name` is used as the family name. Input gene IDs are mapped to `hgnc_id`, while the original `gene_id` is kept in the preview table.
+- Arabidopsis matching uses `Genomic_Locus_Tag` as uppercase `gene_id`, `Gene_Family` for selectable families, and shows `Sub_Family` in the preview table.
+- **Custom groups - RA lab (At)** sub-tab: curated built-in gene sets with group-specific volcano plots and tables.
+- Reference data is downloaded from GitHub on first use and cached in-session.
 
 ### TE Analysis
 
@@ -157,17 +169,6 @@ GO display cutoff, ontology, and top-N controls appear in the sidebar only while
   - `https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/TAIR10_Transposable_Elements.txt`
 
 Human or other organism TE analysis requires a compatible TE-level annotation table or TE quantification output, such as RepeatMasker/TEtranscripts-derived families. Standard human Ensembl gene-level DE tables do not directly contain TE family assignments.
-
-### Gene Groups
-
-- Curated built-in gene sets.
-- Group-specific volcano plot.
-- Reference data is downloaded from GitHub on first use and cached in-session.
-
-### Search Annotations
-
-- Full-text search across annotation columns.
-- Supports AND-style space-separated terms and OR with `|`.
 
 ### Log / Help
 
@@ -182,7 +183,7 @@ Human or other organism TE analysis requires a compatible TE-level annotation ta
 - GO and Hallmark filters only appear on their relevant tabs.
 - Global point size, alpha, and colors.
 
-The upregulated/downregulated/not-significant colors are used across DE plots and enrichment visualizations where relevant, including GO, KEGG, MSigDB/Hallmark, Pathview, and gene group plots.
+The upregulated/downregulated/not-significant colors are used across DE result plots and enrichment visualizations where relevant, including GO, KEGG, MSigDB/Hallmark, Pathview, and gene group plots.
 
 ## Notes
 
