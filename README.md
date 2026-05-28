@@ -14,12 +14,13 @@ Plant's metabolism and molecular genetic lab, Prof. Rachel Amir group
   - `app.R` - Shiny dashboard UI/server.
   - `R/helpers.R` - DESeq2 pipeline, DE result plots, GO/MSigDB helpers, annotation utilities.
   - `R/build_uniprot_description_file.R` - UniProt annotation builder, including Ensembl/SYMBOL/ENTREZID/TAIR ID support through OrgDb where available.
+  - `R/build_refseq_gftf_description_file.R` - RefSeq GTF annotation builder for NCBI-downloaded GTF files, including selectable `db_xref`/attribute ID sources.
   - `legacy_scripts/kegg_analysis.R` - KEGG enrichment and KEGG ID mapping helpers.
   - `legacy_scripts/volcano_TEG_overlap_with_TE_families_RNAseq.R` - Arabidopsis TE superfamily enrichment and volcano helpers.
   - `install_packages.R` - installs required CRAN and Bioconductor packages.
   - `launch_app.R` - launches the Shiny app from R.
   - `example_data/` - bundled example DE table.
-  - `description_files/` - optional local data files. Default Arabidopsis/human annotation tables and TAIR10 TE metadata are loaded from GitHub when internet is available.
+  - `description_files/` - optional local data files. Default Arabidopsis, human, E. coli K-12 MG1655 annotation tables and TAIR10 TE metadata are loaded from GitHub when internet is available.
 - `install.bat` - Windows first-run launcher that installs missing packages.
 - `RA_RNAseq_analysis_app.bat` - faster launcher for later runs.
 
@@ -56,9 +57,9 @@ If standard column names are not found, the app treats the first three columns a
 
 After loading the table, the app auto-detects common `gene_id` formats such as TAIR, Ensembl, RefSeq, Entrez, UniProt, and gene symbols, then updates the Gene ID type in the Organism annotations tab. You can still change it manually.
 
-### Run DESeq2 From RSEM
+### Run DESeq2 From RSEM Or featureCounts
 
-Point the app to a folder containing `*.genes.results` files. The app scans sample IDs and creates editable colData.
+Point the app to a folder containing `*.genes.results` files, or upload a featureCounts output table. The app scans sample IDs and creates editable colData.
 
 colData supports CSV, TSV, and TXT with comma or tab delimiters.
 
@@ -80,15 +81,23 @@ The Data tab prints the exact design formula and contrast used.
 
 When running DESeq2, the selected treatment/control comparison still drives the main DE table and all downstream analyses. The app also extracts every condition level versus the selected control from the same DESeq2 model. The Data tab shows a Venn diagram of shared significant gene IDs across comparisons, with display controls for the Venn colors, and provides a combined all-comparisons CSV download.
 
+In DESeq2 mode, tables with gene rows include a small plot button column. Clicking it opens a normalized-count boxplot for that gene when normalized counts are available.
+
 ## Organism And Gene ID Settings
 
 The **Organism annotations** tab controls organism-wide settings:
 
 - Search/select organism name or NCBI taxonomy ID.
-- Choose **Gene ID type**: `TAIR`, `ENTREZID`, `SYMBOL`, or `ENSEMBL`.
-- The Gene ID type is used by UniProt annotation building, GO, KEGG, and MSigDB/Hallmark where relevant.
+- Choose **Gene ID type**: common OrgDb key types such as `TAIR`, `ENTREZID`, `SYMBOL`, `ALIAS`, `ENSEMBL`, `REFSEQ`, `ACCNUM`, and `UNIPROT` where supported by the selected OrgDb.
+- The Gene ID type is used by annotation builders, GO, KEGG, PMN, and MSigDB/Hallmark where relevant.
 
-The UniProt builder can create an annotation table for the loaded DE gene IDs. For human Ensembl IDs, for example `ENSG00000141510`, the builder uses the selected OrgDb, such as `org.Hs.eg.db`, to bridge Ensembl IDs to UniProt annotations.
+Default annotation buttons are available for Arabidopsis, human, and E. coli K-12 MG1655 when those organisms are selected.
+
+The UniProt builder scans available UniProt ID columns for the selected organism, lets you choose an ID source, and builds a description table using that source as the new `gene_id`. For human Ensembl IDs, for example `ENSG00000141510`, the builder can use the selected OrgDb, such as `org.Hs.eg.db`, to bridge Ensembl IDs to UniProt annotations.
+
+The RefSeq GTF builder accepts NCBI-downloaded GTF files, scans GTF attributes and `db_xref` values, then lets you choose which ID source becomes the new `gene_id`. This is useful for switching from locus tags such as `b0001` to RefSeq protein IDs such as `NP_414542`.
+
+When a builder replaces `gene_id`, the original loaded ID is kept in `original_gene_id` for traceability.
 
 Annotation table downloads include the organism name and tax ID in the filename.
 
@@ -108,6 +117,7 @@ Annotation table downloads include the organism name and tax ID in the filename.
 
 - Load a manual annotation CSV/TSV/TXT.
 - Build annotation table from UniProt.
+- Build annotation table from RefSeq/NCBI GTF.
 - Select organism and Gene ID type.
 - Preview and download current annotation source.
 
@@ -122,6 +132,7 @@ Annotation table downloads include the organism name and tax ID in the filename.
 
 - topGO enrichment with `weight01`, `classic`, or `elim`.
 - Fisher or KS statistic.
+- **GO genes** sub-tab: choose one or more GO IDs and view matched loaded genes as a volcano plot and table.
 - REVIGO-like local semantic reduction using `rrvgo`.
 - GO offspring summaries for custom parent GO terms.
 - Abiotic stress (plants) GO enrichment.
@@ -133,6 +144,7 @@ GO display cutoff, ontology, and top-N controls appear in the sidebar only while
 - KEGG enrichment using `KEGGREST`.
 - The app downloads KEGG pathway gene sets by KEGG organism code, for example `ath` or `hsa`, and caches them locally.
 - For human Ensembl data, KEGG uses Entrez/numeric IDs, so the app maps selected Gene ID type to Entrez IDs through the selected OrgDb before matching pathways.
+- For E. coli `eco`, KEGG pathway genes are usually `b####` locus tags. RefSeq protein IDs such as `NP_414542` can work for GO with `REFSEQ`, but they do not directly match the current KEGG `eco` pathway gene IDs unless mapped back to KEGG-compatible locus IDs.
 - Bubble plot and enrichment table.
 - Pathview pathway maps colored by log2FoldChange. Pathview also uses the same ID mapping, so Ensembl human genes can be colored correctly after mapping.
 
@@ -141,6 +153,7 @@ GO display cutoff, ontology, and top-N controls appear in the sidebar only while
 - Hallmark over-representation analysis using `msigdbr`.
 - Supports up, down, or all significant genes.
 - Uses the selected organism/species and Gene ID type where available.
+- **Hallmark genes** sub-tab: choose one or more Hallmark set codes and view matched loaded genes as a volcano plot and table.
 - Bubble plot and downloadable results table.
 
 `msigdbr` may download/cache MSigDB data on first use.
@@ -191,8 +204,10 @@ The upregulated/downregulated/not-significant colors are used across DE result p
 
 - The bundled TE workflow is Arabidopsis-specific.
 - GO requires the selected OrgDb package to be installed, for example `org.At.tair.db` or `org.Hs.eg.db`.
+- E. coli K-12 GO analysis supports `b####` locus tags through the app's alias normalization and supports RefSeq accessions through OrgDb `REFSEQ`/`ACCNUM` where available.
 - KEGG and Pathview require internet access when KEGG data or pathway images are not cached.
 - UniProt annotation building requires internet access.
+- RefSeq GTF annotation building works from a local GTF file and does not require internet access after the GTF is downloaded.
 - PCA requires count data and is available only after running DESeq2 from RSEM files.
 - No results are saved automatically. Use the download buttons.
 
