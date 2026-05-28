@@ -15,11 +15,12 @@ suppressPackageStartupMessages({
   })
 })
 
-# Allow file uploads up to 30MB
-options(shiny.maxRequestSize = 30 * 1024^2)
+# Allow large annotation uploads, including compressed RefSeq GTF files.
+options(shiny.maxRequestSize = 500 * 1024^2)
 
 source(file.path("R", "helpers.R"), local = TRUE)
 source(file.path("R", "build_uniprot_description_file.R"), local = TRUE)
+source(file.path("R", "build_refseq_gftf_description_file.R"), local = TRUE)
 source(file.path("legacy_scripts", "volcano_TEG_overlap_with_TE_families_RNAseq.R"), local = TRUE)
 source(file.path("legacy_scripts", "genes_into_groups.R"), local = TRUE)
 source(file.path("legacy_scripts", "kegg_analysis.R"), local = TRUE)
@@ -33,7 +34,21 @@ comparison_display_label <- function(x) {
   gsub("_", " ", x, fixed = TRUE)
 }
 
-gene_id_type_choices <- c("TAIR", "ENTREZID", "SYMBOL", "ENSEMBL", "REFSEQ", "UNIPROT")
+gene_id_type_choices <- c(
+  "TAIR", "ENTREZID", "SYMBOL", "ALIAS", "GENENAME",
+  "ENSEMBL", "REFSEQ", "ACCNUM", "UNIPROT"
+)
+
+gene_id_type_choices_for_orgdb <- function(orgdb = NULL) {
+  choices <- gene_id_type_choices
+  if (!is.null(orgdb) && nzchar(orgdb) && requireNamespace("AnnotationDbi", quietly = TRUE) && requireNamespace(orgdb, quietly = TRUE)) {
+    orgdb_obj <- tryCatch(getExportedValue(orgdb, orgdb), error = function(e) NULL)
+    orgdb_keytypes <- if (is.null(orgdb_obj)) character() else tryCatch(AnnotationDbi::keytypes(orgdb_obj), error = function(e) character())
+    orgdb_keytypes <- setdiff(orgdb_keytypes, c("GO", "GOALL", "ONTOLOGY", "ONTOLOGYALL", "EVIDENCE", "EVIDENCEALL"))
+    choices <- unique(c(choices[choices %in% orgdb_keytypes], orgdb_keytypes, choices))
+  }
+  stats::setNames(choices, choices)
+}
 
 detect_gene_id_type_from_values <- function(gene_ids) {
   ids <- trimws(as.character(gene_ids))
@@ -47,6 +62,7 @@ detect_gene_id_type_from_values <- function(gene_ids) {
 
   scores <- c(
     TAIR = mean(grepl("^AT[1-5CM]G[0-9]{5}$", ids_upper)),
+    ALIAS = mean(grepl("^B[0-9]{4}$", ids_upper)),
     ENSEMBL = mean(grepl("^ENS[A-Z]*G[0-9]+$", ids_upper)),
     REFSEQ = mean(grepl("^(NM|NR|XM|XR|NP|XP|YP|WP|NC|NG|NT|NW)_[0-9]+$", ids_upper)),
     ENTREZID = mean(grepl("^[0-9]+$", ids_upper)),
@@ -76,54 +92,180 @@ te_super_family_choices <- tryCatch({
   sort(unique(te_tbl$Transposon_Super_Family))
 }, error = function(e) character())
 default_taxon_choices <- c(
+  "Anopheles gambiae (7165)" = "7165",
   "Arabidopsis thaliana (3702)" = "3702",
+  "Bos taurus (9913)" = "9913",
+  "Caenorhabditis elegans (6239)" = "6239",
+  "Canis lupus familiaris (9615)" = "9615",
+  "Danio rerio (7955)" = "7955",
+  "Drosophila melanogaster (7227)" = "7227",
+  "Escherichia coli K-12 MG1655 (511145)" = "511145",
+  "Escherichia coli O157:H7 Sakai (386585)" = "386585",
+  "Gallus gallus (9031)" = "9031",
   "Homo sapiens (9606)" = "9606",
   "Mus musculus (10090)" = "10090",
+  "Pan troglodytes (9598)" = "9598",
+  "Plasmodium falciparum 3D7 (36329)" = "36329",
   "Rattus norvegicus (10116)" = "10116",
   "Oryza sativa japonica (39947)" = "39947",
   "Oryza sativa (4530)" = "4530",
+  "Sus scrofa (9823)" = "9823",
   "Zea mays (4577)" = "4577",
   "Solanum lycopersicum (4081)" = "4081",
   "Triticum aestivum (4565)" = "4565",
+  "Xenopus laevis (8355)" = "8355",
   "Saccharomyces cerevisiae (559292)" = "559292"
 )
 organism_analysis_config <- data.frame(
-  tax_id = c(3702, 9606, 10090, 10116, 39947, 4530, 4577, 4081, 4565, 559292),
+  tax_id = c(
+    7165, 3702, 9913, 6239, 9615, 7955, 7227, 511145, 386585, 9031,
+    9606, 10090, 9598, 36329, 10116, 39947, 4530, 9823, 4577, 4081,
+    4565, 8355, 559292
+  ),
   label = c(
+    "Anopheles gambiae",
     "Arabidopsis thaliana",
+    "Bos taurus",
+    "Caenorhabditis elegans",
+    "Canis lupus familiaris",
+    "Danio rerio",
+    "Drosophila melanogaster",
+    "Escherichia coli K-12 MG1655",
+    "Escherichia coli O157:H7 Sakai",
+    "Gallus gallus",
     "Homo sapiens",
     "Mus musculus",
+    "Pan troglodytes",
+    "Plasmodium falciparum 3D7",
     "Rattus norvegicus",
     "Oryza sativa japonica",
     "Oryza sativa",
+    "Sus scrofa",
     "Zea mays",
     "Solanum lycopersicum",
     "Triticum aestivum",
+    "Xenopus laevis",
     "Saccharomyces cerevisiae"
   ),
   orgdb = c(
+    "org.Ag.eg.db",
     "org.At.tair.db",
+    "org.Bt.eg.db",
+    "org.Ce.eg.db",
+    "org.Cf.eg.db",
+    "org.Dr.eg.db",
+    "org.Dm.eg.db",
+    "org.EcK12.eg.db",
+    "org.EcSakai.eg.db",
+    "org.Gg.eg.db",
     "org.Hs.eg.db",
     "org.Mm.eg.db",
+    "org.Pt.eg.db",
+    "org.Pf.plasmo.db",
     "org.Rn.eg.db",
     "org.Osativa.eg.db",
     "org.Osativa.eg.db",
+    "org.Ss.eg.db",
     "org.Zm.eg.db",
     "org.Slycopersicum.eg.db",
     "org.Ta.eg.db",
+    "org.Xl.eg.db",
     "org.Sc.sgd.db"
   ),
-  go_keytype = c("TAIR", rep("ENTREZID", 9)),
-  topgo_id = c("entrez", rep("entrez", 9)),
-  kegg_species = c("ath", "hsa", "mmu", "rno", "osa", "osa", "zma", "sly", "tae", "sce"),
+  go_keytype = c(
+    "ENTREZID", "TAIR", "ENTREZID", "ENTREZID", "ENTREZID", "ENTREZID", "ENTREZID",
+    "ALIAS", "ALIAS", "ENTREZID", "ENTREZID", "ENTREZID", "ENTREZID", "ENTREZID",
+    "ENTREZID", "ENTREZID", "ENTREZID", "ENTREZID", "ENTREZID", "ENTREZID",
+    "ENTREZID", "ENTREZID", "ENTREZID"
+  ),
+  topgo_id = c(
+    "entrez", "entrez", "entrez", "entrez", "entrez", "entrez", "entrez",
+    "alias", "alias", "entrez", "entrez", "entrez", "entrez", "entrez",
+    "entrez", "entrez", "entrez", "entrez", "entrez", "entrez", "entrez",
+    "entrez", "entrez"
+  ),
+  kegg_species = c(
+    "aga", "ath", "bta", "cel", "cfa", "dre", "dme", "eco", "ecs", "gga",
+    "hsa", "mmu", "ptr", "pfa", "rno", "osa", "osa", "ssc", "zma", "sly",
+    "tae", "xla", "sce"
+  ),
   stringsAsFactors = FALSE
 )
-installed_orgdb_packages <- tryCatch({
-  pkgs <- rownames(utils::installed.packages())
-  sort(pkgs[grepl("^org\\..*\\.db$", pkgs)])
-}, error = function(e) character())
-all_orgdb_packages <- sort(unique(c(organism_analysis_config$orgdb, installed_orgdb_packages)))
-go_orgdb_choices <- stats::setNames(all_orgdb_packages, all_orgdb_packages)
+known_orgdb_catalog <- data.frame(
+  package = c(
+    "org.Ag.eg.db",
+    "org.At.tair.db",
+    "org.Bt.eg.db",
+    "org.Ce.eg.db",
+    "org.Cf.eg.db",
+    "org.Dm.eg.db",
+    "org.Dr.eg.db",
+    "org.EcK12.eg.db",
+    "org.EcSakai.eg.db",
+    "org.Gg.eg.db",
+    "org.Hbacteriophora.eg.db",
+    "org.Hs.eg.db",
+    "org.Mm.eg.db",
+    "org.Mmu.eg.db",
+    "org.Mxanthus.db",
+    "org.Osativa.eg.db",
+    "org.Pf.plasmo.db",
+    "org.Pt.eg.db",
+    "org.Rn.eg.db",
+    "org.Sc.sgd.db",
+    "org.Slycopersicum.eg.db",
+    "org.Ss.eg.db",
+    "org.Ta.eg.db",
+    "org.Xl.eg.db",
+    "org.Zm.eg.db"
+  ),
+  organism = c(
+    "Anopheles",
+    "Arabidopsis thaliana",
+    "Bovine",
+    "Caenorhabditis elegans",
+    "Canine",
+    "Drosophila melanogaster",
+    "Danio rerio",
+    "E. coli K-12",
+    "E. coli Sakai",
+    "Chicken",
+    "Heterorhabditis bacteriophora",
+    "Homo sapiens",
+    "Mus musculus",
+    "Rhesus macaque",
+    "Myxococcus xanthus DK 1622",
+    "Oryza sativa",
+    "Plasmodium falciparum",
+    "Pan troglodytes",
+    "Rattus norvegicus",
+    "Saccharomyces cerevisiae",
+    "Solanum lycopersicum",
+    "Pig",
+    "Triticum aestivum",
+    "Xenopus",
+    "Zea mays"
+  ),
+  stringsAsFactors = FALSE
+)
+installed_orgdb_package_names <- function() {
+  tryCatch({
+    pkgs <- rownames(utils::installed.packages())
+    sort(pkgs[grepl("^org\\..*\\.db$", pkgs)])
+  }, error = function(e) character())
+}
+make_go_orgdb_choices <- function() {
+  installed_orgdb_packages <- installed_orgdb_package_names()
+  all_orgdb_packages <- sort(unique(c(known_orgdb_catalog$package, organism_analysis_config$orgdb, installed_orgdb_packages)))
+  go_orgdb_choice_labels <- vapply(all_orgdb_packages, function(pkg) {
+    label <- known_orgdb_catalog$organism[match(pkg, known_orgdb_catalog$package)]
+    if (is.na(label) || !nzchar(label)) label <- pkg
+    installed_suffix <- if (pkg %in% installed_orgdb_packages) " [installed]" else ""
+    paste0(label, " (", pkg, ")", installed_suffix)
+  }, character(1))
+  stats::setNames(all_orgdb_packages, go_orgdb_choice_labels)
+}
+go_orgdb_choices <- make_go_orgdb_choices()
 msigdb_species_choices <- tryCatch({
   if (!requireNamespace("msigdbr", quietly = TRUE)) character() else {
     sp <- msigdbr::msigdbr_species()
@@ -146,7 +288,7 @@ ui <- fluidPage(
   # if (requireNamespace("shinythemes", quietly = TRUE)) shinythemes::themeSelector(),
 
   titlePanel(div(class = "app-title", "RNA-seq Analysis Dashboard")),
-  div(class = "muted", "Load DE results directly, or run DESeq2 from RSEM .genes.results files. Outputs are shown in the app and downloaded only when requested."),
+  div(class = "muted", "Load DE results directly, or run DESeq2 from RSEM .genes.results files or featureCounts output. Outputs are shown in the app and downloaded only when requested."),
   br(),
 
   sidebarLayout(
@@ -156,7 +298,7 @@ ui <- fluidPage(
         radioButtons("data_mode", NULL,
           choices = c(
             "Upload DE results CSV/TSV/Excel" = "csv",
-            "Run DESeq2 from RSEM folder" = "rsem",
+            "Run DESeq2" = "rsem",
             "Example dataset (mto1 vs. wt)" = "example"
           ), selected = "csv"),
 
@@ -166,9 +308,19 @@ ui <- fluidPage(
         ),
 
         conditionalPanel("input.data_mode == 'rsem'",
-          shinyDirButton("choose_rsem_dir", "Choose RSEM folder", "Select a folder"),
-          textInput("rsem_path", "RSEM folder path", value = ""),
-          actionButton("scan_rsem", "Scan folder", class = "btn-primary"),
+          radioButtons("deseq_input_type", "DESeq2 input",
+            choices = c("RSEM .genes.results folder" = "rsem", "featureCounts output table" = "featurecounts"),
+            selected = "rsem"),
+          conditionalPanel("input.deseq_input_type == 'rsem'",
+            shinyDirButton("choose_rsem_dir", "Choose RSEM folder", "Select a folder"),
+            textInput("rsem_path", "RSEM folder path", value = ""),
+            actionButton("scan_rsem", "Scan folder", class = "btn-primary")
+          ),
+          conditionalPanel("input.deseq_input_type == 'featurecounts'",
+            fileInput("featurecounts_file", "featureCounts output", accept = c(".txt", ".tsv", ".csv")),
+            actionButton("scan_featurecounts", "Load samples", class = "btn-primary"),
+            div(class = "muted", "Uses columns after gene_biotype when present; otherwise columns after Length.")
+          ),
           tags$hr(),
           fileInput("coldata_file", "Optional colData CSV/TSV/Excel", accept = c(".csv", ".tsv", ".txt", ".xlsx", ".xls")),
           div(class = "muted", "colData can use columns sample_id/condition, or the older x/sample/exp format. You can also edit the scanned table below."),
@@ -358,7 +510,7 @@ ui <- fluidPage(
             column(4,
               wellPanel(
                 h4("Analysis ID settings"),
-                selectInput("go_keytype", "Gene ID type", choices = gene_id_type_choices, selected = "TAIR"),
+                selectInput("go_keytype", "Gene ID type", choices = gene_id_type_choices_for_orgdb("org.At.tair.db"), selected = "TAIR"),
                 textOutput("gene_id_type_detection"),
                 div(class = "muted", "Used for description-file building, GO, KEGG, Hallmark, and PMN analysis.")
               )
@@ -366,7 +518,7 @@ ui <- fluidPage(
           ),
           tags$hr(),
           fluidRow(class = "annotation-input-row",
-            column(6,
+            column(4,
               wellPanel(
                 h4("Load annotation table"),
                 fileInput("annotation_file", "Annotation CSV/TSV/TXT", accept = c(".csv", ".tsv", ".txt")),
@@ -374,12 +526,26 @@ ui <- fluidPage(
                 actionButton("load_annotation_file", "Load annotations", class = "btn-primary", style = "width:100%;")
               )
             ),
-            column(6,
+            column(4,
               wellPanel(
                 h4("Build from UniProt"),
                 checkboxInput("annotation_reviewed_only", "Reviewed Swiss-Prot entries only", value = FALSE),
-                div(class = "muted", "Builds annotations for the gene_id values currently loaded in the Data tab, using the organism selected above. Requires internet access."),
+                actionButton("scan_uniprot_id_sources", "Scan ID sources", class = "btn-primary", style = "width:100%; margin-bottom: 8px;"),
+                uiOutput("uniprot_id_source_ui"),
+                textOutput("uniprot_status"),
+                div(class = "muted", "Downloads UniProt annotations for the organism selected above, then uses the selected source as the new gene_id column. Requires internet access."),
                 actionButton("build_uniprot_annotations", "Build description file", class = "btn-success", style = "width:100%;")
+              )
+            ),
+            column(4,
+              wellPanel(
+                h4("Build from RefSeq GTF"),
+                fileInput("refseq_gtf_file", "NCBI RefSeq GTF", accept = c(".gtf", ".gtf.gz")),
+                uiOutput("refseq_gtf_id_source_ui"),
+                checkboxInput("refseq_gtf_one_row_per_id", "One annotation row per selected ID", value = TRUE),
+                textOutput("refseq_gtf_status"),
+                div(class = "muted", "Parses GTF attributes and db_xref IDs, then uses the selected source as the new gene_id column."),
+                actionButton("build_refseq_gtf_annotations", "Build description file", class = "btn-success", style = "width:100%;")
               )
             )
           ),
@@ -511,7 +677,7 @@ ui <- fluidPage(
                   column(4, selectInput("go_statistic", "Statistic", choices = c("fisher", "ks"), selected = "fisher")),
                   column(4, br(), actionButton("run_go", "Run GO enrichment", class = "btn-primary", style = "width:100%;"))
                 ),
-                div(class = "muted", "Uses the organism selected in the Organism annotations tab. Runs all terms; p-value & top-N filters apply on display without re-running.")
+                div(class = "muted", "Choose any listed OrgDb package. Entries marked [installed] are ready to use; other packages must be installed before GO analysis can run. P-value & top-N filters apply on display without re-running.")
               ),
               fluidRow(
                 column(12,
@@ -521,6 +687,26 @@ ui <- fluidPage(
                   tags$hr(),
                   DTOutput("go_table"),
                   div(class = "download-row", downloadButton("download_go_table", "Download GO table"))
+                )
+              )
+            ),
+            tabPanel("GO genes",
+              wellPanel(
+                fluidRow(
+                  column(7, uiOutput("go_gene_codes_ui")),
+                  column(2, br(), actionButton("run_go_gene_lookup", "Find genes", class = "btn-primary", style = "width:100%;")),
+                  column(3, div(class = "muted", style = "margin-top: 8px;", "Uses the selected GO OrgDb, Gene ID type, ontology, and current padj/log2FC thresholds."))
+                )
+              ),
+              fluidRow(
+                column(12,
+                  h4("GO genes volcano plot"),
+                  plotOutput("go_genes_volcano", width = "auto", height = "auto"),
+                  download_plot_ui("go_genes_volcano", "Download GO genes volcano"),
+                  tags$hr(),
+                  h4("GO genes"),
+                  DTOutput("go_genes_table"),
+                  div(class = "download-row", downloadButton("download_go_genes_table", "Download GO genes table"))
                 )
               )
             ),
@@ -680,25 +866,49 @@ ui <- fluidPage(
         ),
 
         tabPanel("Hallmark",
-          wellPanel(
-            fluidRow(
-              column(3, selectInput("msigdb_direction", "Gene set", choices = c("up", "down", "all"), selected = "up")),
-              column(4, selectizeInput("msigdb_species", "MSigDB species", choices = msigdb_species_select_choices, selected = default_msigdb_species,
-                                       options = list(create = FALSE, placeholder = "Select an MSigDB species"))),
-              column(2, numericInput("msigdb_min_set_size", "Min set size", value = 5, min = 1, step = 1)),
-              column(3, br(), uiOutput("msigdb_run_ui"))
+          tabsetPanel(
+            tabPanel("Enrichment Analysis",
+              wellPanel(
+                fluidRow(
+                  column(3, selectInput("msigdb_direction", "Gene set", choices = c("up", "down", "all"), selected = "up")),
+                  column(4, selectizeInput("msigdb_species", "MSigDB species", choices = msigdb_species_select_choices, selected = default_msigdb_species,
+                                           options = list(create = FALSE, placeholder = "Select an MSigDB species"))),
+                  column(2, numericInput("msigdb_min_set_size", "Min set size", value = 5, min = 1, step = 1)),
+                  column(3, br(), uiOutput("msigdb_run_ui"))
+                ),
+                div(class = "muted", "Uses MSigDB Hallmark gene sets from the msigdbr package and the Gene ID type selected in Organism annotations.")
+              ),
+              fluidRow(
+                column(12,
+                  h4("Hallmark enrichment plot"),
+                  plotOutput("msigdb_plot", width = "auto", height = "auto"),
+                  download_plot_ui("msigdb", "Download Hallmark plot"),
+                  tags$hr(),
+                  h4("Hallmark enrichment table"),
+                  DTOutput("msigdb_table"),
+                  div(class = "download-row", downloadButton("download_msigdb_table", "Download Hallmark table"))
+                )
+              )
             ),
-            div(class = "muted", "Uses MSigDB Hallmark gene sets from the msigdbr package and the Gene ID type selected in Organism annotations.")
-          ),
-          fluidRow(
-            column(12,
-              h4("Hallmark enrichment plot"),
-              plotOutput("msigdb_plot", width = "auto", height = "auto"),
-              download_plot_ui("msigdb", "Download Hallmark plot"),
-              tags$hr(),
-              h4("Hallmark enrichment table"),
-              DTOutput("msigdb_table"),
-              div(class = "download-row", downloadButton("download_msigdb_table", "Download Hallmark table"))
+            tabPanel("Hallmark genes",
+              wellPanel(
+                fluidRow(
+                  column(7, uiOutput("hallmark_gene_codes_ui")),
+                  column(2, br(), actionButton("run_hallmark_gene_lookup", "Find genes", class = "btn-primary", style = "width:100%;")),
+                  column(3, div(class = "muted", style = "margin-top: 8px;", "Uses the selected MSigDB species, Gene ID type, and current padj/log2FC thresholds."))
+                )
+              ),
+              fluidRow(
+                column(12,
+                  h4("Hallmark genes volcano plot"),
+                  plotOutput("hallmark_genes_volcano", width = "auto", height = "auto"),
+                  download_plot_ui("hallmark_genes_volcano", "Download Hallmark genes volcano"),
+                  tags$hr(),
+                  h4("Hallmark genes"),
+                  DTOutput("hallmark_genes_table"),
+                  div(class = "download-row", downloadButton("download_hallmark_genes_table", "Download Hallmark genes table"))
+                )
+              )
             )
           )
         ),
@@ -880,6 +1090,8 @@ server <- function(input, output, session) {
     revigo_direction = NULL,
     revigo_up = NULL,
     revigo_down = NULL,
+    go_gene_lookup = NULL,
+    go_genes = NULL,
     te_volcano = NULL,
     te_volcano_plot = NULL,
     gene_groups = NULL,
@@ -891,6 +1103,8 @@ server <- function(input, output, session) {
     gene_family_enrichment = NULL,
     msigdb_enrichment = NULL,
     msigdb_plot = NULL,
+    hallmark_gene_lookup = NULL,
+    hallmark_genes = NULL,
     kegg_enrichment = NULL,
     kegg_bubble = NULL,
     pmn_enrichment = NULL,
@@ -903,7 +1117,12 @@ server <- function(input, output, session) {
     selected_gene_counts_gene = NULL,
     annotation_df = load_description_file(),
     annotation_label = "Default Arabidopsis description file (GitHub)",
+    annotation_replace_gene_id = FALSE,
     annotation_preview_ready = FALSE,
+    uniprot_id_choices = NULL,
+    uniprot_status = "Scan UniProt ID sources for the selected organism before building.",
+    refseq_gtf_id_choices = NULL,
+    refseq_gtf_status = "Upload a RefSeq GTF file to scan available ID sources.",
     taxonomy_results = NULL,
     selected_tax_id = 3702,
     selected_organism_label = "Arabidopsis thaliana",
@@ -920,6 +1139,37 @@ server <- function(input, output, session) {
   )
 
   `%||%` <- function(a, b) if (!is.null(a)) a else b
+
+  ensure_orgdb_installed <- function(pkg) {
+    pkg <- pkg %||% ""
+    if (!nzchar(pkg)) return(FALSE)
+    if (requireNamespace(pkg, quietly = TRUE)) return(TRUE)
+    if (!grepl("^org\\..*\\.db$", pkg)) return(FALSE)
+
+    append_log("Installing OrgDb package:", pkg, level = "STEP")
+    showNotification(paste("Installing", pkg, "from Bioconductor. This can take a few minutes."), type = "message", duration = 10)
+    tryCatch({
+      old_repos <- getOption("repos")
+      on.exit(options(repos = old_repos), add = TRUE)
+      if (is.null(old_repos[["CRAN"]]) || identical(unname(old_repos[["CRAN"]]), "@CRAN@")) {
+        options(repos = c(CRAN = "https://cloud.r-project.org"))
+      }
+      if (!requireNamespace("BiocManager", quietly = TRUE)) {
+        install.packages("BiocManager")
+      }
+      BiocManager::install(pkg, ask = FALSE, update = FALSE)
+      ok <- requireNamespace(pkg, quietly = TRUE)
+      if (!isTRUE(ok)) stop("Installation finished, but the package is still not available.")
+      updateSelectInput(session, "go_orgdb", choices = make_go_orgdb_choices(), selected = pkg)
+      append_log("OrgDb package installed:", pkg)
+      showNotification(paste("Installed", pkg), type = "message", duration = 8)
+      TRUE
+    }, error = function(e) {
+      append_log("OrgDb install error for", pkg, ":", e$message)
+      showNotification(paste("Could not install", pkg, ":", e$message), type = "error", duration = 15)
+      FALSE
+    })
+  }
 
   organism_config_for_tax <- function(tax_id) {
     tax_id <- suppressWarnings(as.integer(tax_id))
@@ -945,6 +1195,8 @@ server <- function(input, output, session) {
     if (is.na(tax_id)) return()
     rv$selected_tax_id <- tax_id
     rv$selected_organism_label <- organism_name %||% taxonomy_label_for_tax(tax_id) %||% paste0("tax_id ", tax_id)
+    rv$uniprot_id_choices <- NULL
+    rv$uniprot_status <- "Scan UniProt ID sources for the selected organism before building."
     if (rv$selected_organism_label %in% msigdb_species_choices) {
       updateSelectizeInput(session, "msigdb_species", selected = rv$selected_organism_label)
     } else {
@@ -958,8 +1210,10 @@ server <- function(input, output, session) {
     if (!is.null(cfg)) {
       updateSelectInput(session, "go_orgdb", selected = cfg$orgdb)
       selected_keytype <- rv$detected_gene_id_type %||% cfg$go_keytype
-      if (!selected_keytype %in% gene_id_type_choices) selected_keytype <- cfg$go_keytype
-      updateSelectInput(session, "go_keytype", selected = selected_keytype)
+      keytype_choices <- gene_id_type_choices_for_orgdb(cfg$orgdb)
+      if (!selected_keytype %in% unname(keytype_choices)) selected_keytype <- cfg$go_keytype
+      if (!selected_keytype %in% unname(keytype_choices)) selected_keytype <- unname(keytype_choices)[1]
+      updateSelectInput(session, "go_keytype", choices = keytype_choices, selected = selected_keytype)
       updateTextInput(session, "kegg_species", value = cfg$kegg_species)
       rv$selected_go_available <- requireNamespace(cfg$orgdb, quietly = TRUE)
       rv$selected_kegg_available <- !is.na(cfg$kegg_species) && nzchar(cfg$kegg_species)
@@ -995,8 +1249,10 @@ server <- function(input, output, session) {
     switch(keytype,
       ENTREZID = "entrez",
       SYMBOL = "symbol",
+      ALIAS = "alias",
+      GENENAME = "genename",
       ENSEMBL = "ensembl",
-      REFSEQ = "genbank",
+      REFSEQ = "refseq",
       TAIR = "entrez",
       "entrez"
     )
@@ -1072,6 +1328,7 @@ server <- function(input, output, session) {
     tax_id <- suppressWarnings(as.integer(tax_id))
     if (identical(tax_id, 3702L)) return("Default Arabidopsis description file")
     if (identical(tax_id, 9606L)) return("Default human description file")
+    if (identical(tax_id, 511145L)) return("Default E. coli K-12 MG1655 description file")
     "Default organism description file (GitHub)"
   }
 
@@ -1084,6 +1341,8 @@ server <- function(input, output, session) {
     rv$revigo_direction <- NULL
     rv$revigo_up <- NULL
     rv$revigo_down <- NULL
+    rv$go_gene_lookup <- NULL
+    rv$go_genes <- NULL
     rv$te_volcano <- NULL
     rv$te_volcano_plot <- NULL
     rv$gene_groups <- NULL
@@ -1095,6 +1354,8 @@ server <- function(input, output, session) {
     rv$gene_family_enrichment <- NULL
     rv$msigdb_enrichment <- NULL
     rv$msigdb_plot <- NULL
+    rv$hallmark_gene_lookup <- NULL
+    rv$hallmark_genes <- NULL
     rv$kegg_enrichment <- NULL
     rv$kegg_bubble <- NULL
     rv$pmn_enrichment <- NULL
@@ -1107,15 +1368,52 @@ server <- function(input, output, session) {
     rv$go_cache <- list()
   }
 
-  apply_current_annotation <- function(reset_results = TRUE) {
-    req(rv$de_base)
-    rv$de <- merge_with_description(rv$de_base, rv$annotation_df)
+  annotation_match_count_for <- function(base_de) {
+    if (is.null(base_de) || is.null(rv$annotation_df)) return(NA_integer_)
+    if (isTRUE(rv$annotation_replace_gene_id)) {
+      lookup <- make_annotation_lookup(rv$annotation_df)
+      return(sum(gene_join_key(base_de$gene_id) %in% lookup$lookup_key, na.rm = TRUE))
+    }
+    sum(gene_join_key(base_de$gene_id) %in% gene_join_key(rv$annotation_df$gene_id), na.rm = TRUE)
+  }
+
+  apply_annotation_to_base <- function(base_de, reset_results = TRUE) {
+    req(base_de)
+    rv$de <- merge_with_description(
+      base_de,
+      rv$annotation_df,
+      replace_gene_id = isTRUE(rv$annotation_replace_gene_id)
+    )
+    match_count <- annotation_match_count_for(base_de)
+    if (isTRUE(rv$annotation_replace_gene_id)) {
+      replaced_count <- 0L
+      if ("original_gene_id" %in% names(rv$de)) {
+        replaced_count <- sum(
+          !is.na(rv$de$original_gene_id) &
+            gene_join_key(rv$de$gene_id) != gene_join_key(rv$de$original_gene_id),
+          na.rm = TRUE
+        )
+      }
+      append_log(
+        "Applied annotations:",
+        ifelse(is.na(match_count), 0, match_count),
+        "matched genes;",
+        replaced_count,
+        "gene_id values replaced."
+      )
+    } else if (!is.null(rv$annotation_df)) {
+      append_log("Applied annotations:", ifelse(is.na(match_count), 0, match_count), "matched genes.")
+    }
     if (isTRUE(reset_results)) clear_analysis_results()
   }
 
   annotation_match_count <- function() {
-    if (is.null(rv$de_base) || is.null(rv$annotation_df)) return(NA_integer_)
-    sum(gene_join_key(rv$de_base$gene_id) %in% gene_join_key(rv$annotation_df$gene_id), na.rm = TRUE)
+    annotation_match_count_for(rv$de_base)
+  }
+
+  apply_current_annotation <- function(reset_results = TRUE) {
+    req(rv$de_base)
+    apply_annotation_to_base(rv$de_base, reset_results = reset_results)
   }
 
   go_cache_key <- function(direction) {
@@ -1138,7 +1436,8 @@ server <- function(input, output, session) {
                               p_cutoff = 1, algorithm = input$go_algorithm,
                               statistic = input$go_statistic,
                               orgdb = input$go_orgdb %||% "org.At.tair.db",
-                              topgo_id = topgo_id_from_keytype(input$go_keytype))
+                              topgo_id = topgo_id_from_keytype(input$go_keytype),
+                              keytype = input$go_keytype %||% "TAIR")
     set_cached_go(direction, g)
   }
 
@@ -1186,6 +1485,10 @@ server <- function(input, output, session) {
     if (length(path) && nzchar(path)) updateTextInput(session, "rsem_path", value = path)
   })
 
+  observeEvent(input$deseq_input_type, {
+    rv$coldata <- NULL
+  }, ignoreInit = TRUE)
+
   observeEvent(input$scan_rsem, {
     req(input$rsem_path)
     append_log("Scanning RSEM folder:", input$rsem_path, level = "STEP")
@@ -1197,6 +1500,24 @@ server <- function(input, output, session) {
     }
     rv$coldata <- tbl[, c("sample_id", "condition", "sample_label")]
     append_log("Scanned", nrow(tbl), "RSEM gene.results files.")
+  })
+
+  observeEvent(input$scan_featurecounts, {
+    req(input$featurecounts_file$datapath)
+    append_log("Loading featureCounts samples:", input$featurecounts_file$name, level = "STEP")
+    tryCatch({
+      tbl <- scan_featurecounts_file(input$featurecounts_file$datapath)
+      if (nrow(tbl) == 0) {
+        showNotification("No sample count columns found in this featureCounts file", type = "error")
+        append_log("No featureCounts sample columns found in", input$featurecounts_file$name)
+        return()
+      }
+      rv$coldata <- tbl[, c("sample_id", "condition", "sample_label")]
+      append_log("Loaded", nrow(tbl), "featureCounts samples.")
+    }, error = function(e) {
+      showNotification(paste("featureCounts load error:", e$message), type = "error", duration = 12)
+      append_log("featureCounts load error:", e$message)
+    })
   })
 
   observeEvent(input$coldata_file, {
@@ -1292,7 +1613,7 @@ server <- function(input, output, session) {
       rv$de_base <- base_de
       if (!is.null(base_de)) {
         auto_update_gene_id_type(base_de, input$data_mode)
-        rv$de <- merge_with_description(base_de, isolate(rv$annotation_df))
+        apply_annotation_to_base(base_de, reset_results = FALSE)
       } else {
         rv$de <- NULL
       }
@@ -1307,27 +1628,48 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$run_deseq, {
-    req(input$rsem_path, rv$coldata, input$treatment, input$control)
-    append_log("Running DESeq2:", input$treatment, "vs", input$control, level = "STEP")
+    req(rv$coldata, input$treatment, input$control)
+    deseq_input_type <- input$deseq_input_type %||% "rsem"
+    if (identical(deseq_input_type, "featurecounts")) {
+      req(input$featurecounts_file$datapath)
+    } else {
+      req(input$rsem_path)
+    }
+    append_log("Running DESeq2", paste0("(", deseq_input_type, "):"), input$treatment, "vs", input$control, level = "STEP")
     withProgress(message = "Running DESeq2", value = 0.1, {
       tryCatch({
-        incProgress(0.2, detail = "Importing RSEM files")
-        res <- run_deseq2_from_rsem(
-          folder = input$rsem_path,
-          coldata = rv$coldata,
-          treatment = input$treatment,
-          control = input$control,
-          lfc_shrink = isTRUE(input$lfc_shrink),
-          min_count = input$min_count,
-          effect_col = if (!is.null(input$effect_col)) input$effect_col else "",
-          effect_level = if (!is.null(input$effect_level)) input$effect_level else "",
-          use_interaction = isTRUE(input$use_interaction) && !identical(input$effect_col, "condition"),
-          all_vs_control = TRUE
-        )
+        incProgress(0.2, detail = if (identical(deseq_input_type, "featurecounts")) "Importing featureCounts matrix" else "Importing RSEM files")
+        res <- if (identical(deseq_input_type, "featurecounts")) {
+          run_deseq2_from_featurecounts(
+            counts_file = input$featurecounts_file$datapath,
+            coldata = rv$coldata,
+            treatment = input$treatment,
+            control = input$control,
+            lfc_shrink = isTRUE(input$lfc_shrink),
+            min_count = input$min_count,
+            effect_col = if (!is.null(input$effect_col)) input$effect_col else "",
+            effect_level = if (!is.null(input$effect_level)) input$effect_level else "",
+            use_interaction = isTRUE(input$use_interaction) && !identical(input$effect_col, "condition"),
+            all_vs_control = TRUE
+          )
+        } else {
+          run_deseq2_from_rsem(
+            folder = input$rsem_path,
+            coldata = rv$coldata,
+            treatment = input$treatment,
+            control = input$control,
+            lfc_shrink = isTRUE(input$lfc_shrink),
+            min_count = input$min_count,
+            effect_col = if (!is.null(input$effect_col)) input$effect_col else "",
+            effect_level = if (!is.null(input$effect_level)) input$effect_level else "",
+            use_interaction = isTRUE(input$use_interaction) && !identical(input$effect_col, "condition"),
+            all_vs_control = TRUE
+          )
+        }
         incProgress(0.7, detail = "Preparing tables and PCA")
         rv$de_base <- res$de_table
         auto_update_gene_id_type(res$de_table, "DESeq2 results")
-        rv$de <- merge_with_description(res$de_table, rv$annotation_df)
+        apply_annotation_to_base(res$de_table, reset_results = FALSE)
         rv$norm_counts <- res$norm_counts
         rv$pca <- res$pca_table
         rv$de_summary <- res$summary
@@ -1477,6 +1819,7 @@ server <- function(input, output, session) {
               options = list(
                 pageLength = 10,
                 scrollX = TRUE,
+                autoWidth = FALSE,
                 columnDefs = if (button_data$has_buttons) gene_count_button_defs else list()
               ),
               callback = if (button_data$has_buttons) gene_count_button_callback else JS(""))
@@ -1538,11 +1881,11 @@ server <- function(input, output, session) {
     count_buttons <- vapply(as.character(d$gene_id), function(gene_id) {
       gene_id_escaped <- htmltools::htmlEscape(gene_id, attribute = TRUE)
       paste0(
-        "<button type=\"button\" class=\"btn btn-default btn-xs gene-counts-btn\" ",
-        "data-gene=\"", gene_id_escaped, "\">Plot</button>"
+        "<button type=\"button\" class=\"btn btn-primary btn-xs gene-counts-btn\" style=\"font-size: 18px; padding: 0; line-height: 1;\" ",
+        "data-gene=\"", gene_id_escaped, "\">☷</button>"
       )
     }, character(1))
-    list(data = data.frame(Counts = count_buttons, d, check.names = FALSE), has_buttons = TRUE)
+    list(data = data.frame(" " = count_buttons, d, check.names = FALSE), has_buttons = TRUE)
   }
 
   gene_count_button_callback <- JS(
@@ -1553,7 +1896,7 @@ server <- function(input, output, session) {
   )
 
   gene_count_button_defs <- list(
-    list(targets = 0, orderable = FALSE, searchable = FALSE)
+    list(targets = 0, orderable = FALSE, searchable = FALSE, width = "10px", className = "dt-left")
   )
 
   selected_gene_counts_plot_reactive <- reactive({
@@ -1656,6 +1999,7 @@ server <- function(input, output, session) {
       "Source: ", rv$annotation_label %||% "annotation table", "\n",
       "Annotation rows: ", nrow(ann), "\n",
       "Annotation columns: ", max(ncol(ann) - 2, 0), "\n",
+      "Replace result gene_id with annotation gene_id: ", isTRUE(rv$annotation_replace_gene_id), "\n",
       "Loaded genes matched: ", ifelse(is.na(match_count), "load a DE table first", match_count), "\n",
       "Applied to DE table: ", !is.null(rv$de)
     )
@@ -1676,6 +2020,104 @@ server <- function(input, output, session) {
     )
   })
 
+  output$uniprot_id_source_ui <- renderUI({
+    choices <- rv$uniprot_id_choices
+    if (is.null(choices) || length(choices) == 0) {
+      return(selectInput("uniprot_id_source", "Use as gene_id", choices = c("Scan ID sources first" = ""), selected = ""))
+    }
+
+    selected <- if ("Gene.Names..ordered.locus." %in% unname(choices)) {
+      "Gene.Names..ordered.locus."
+    } else if ("GeneID" %in% unname(choices)) {
+      "GeneID"
+    } else if ("RefSeq" %in% unname(choices)) {
+      "RefSeq"
+    } else if ("Entry" %in% unname(choices)) {
+      "Entry"
+    } else {
+      unname(choices)[1]
+    }
+    selectInput("uniprot_id_source", "Use as gene_id", choices = choices, selected = selected)
+  })
+
+  output$uniprot_status <- renderText({
+    rv$uniprot_status %||% ""
+  })
+
+  observeEvent(input$annotation_reviewed_only, {
+    rv$uniprot_id_choices <- NULL
+    rv$uniprot_status <- "Reviewed-only setting changed. Scan UniProt ID sources again before building."
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$scan_uniprot_id_sources, {
+    tax_id <- suppressWarnings(as.integer(rv$selected_tax_id))
+    validate(need(!is.na(tax_id) && tax_id > 0, "Enter a valid NCBI taxonomy ID."))
+    append_log("Scanning UniProt ID sources for tax_id", tax_id, level = "STEP")
+    rv$uniprot_status <- paste("Scanning UniProt ID sources for tax_id", tax_id, "...")
+    withProgress(message = "Scanning UniProt ID sources", value = 0.1, {
+      tryCatch({
+        incProgress(0.4, detail = paste("Downloading UniProt IDs for tax_id", tax_id))
+        choices <- uniprot_id_source_choices(
+          tax_id = tax_id,
+          reviewed_only = isTRUE(input$annotation_reviewed_only),
+          max_records = 500
+        )
+        if (length(choices) == 0) stop("No usable UniProt ID sources were found for tax_id ", tax_id, ".")
+        rv$uniprot_id_choices <- choices
+        rv$uniprot_status <- paste("Found", length(choices), "UniProt ID sources. Choose one, then build the description file.")
+        showNotification(paste("Found", length(choices), "UniProt ID sources."), type = "message", duration = 5)
+        append_log("Found", length(choices), "UniProt ID sources for tax_id", tax_id)
+      }, error = function(e) {
+        rv$uniprot_id_choices <- NULL
+        rv$uniprot_status <- paste("UniProt ID-source scan error:", e$message)
+        showNotification(e$message, type = "error", duration = 15)
+        append_log("UniProt ID-source scan error:", e$message)
+      })
+    })
+  })
+
+  output$refseq_gtf_id_source_ui <- renderUI({
+    choices <- rv$refseq_gtf_id_choices
+    if (is.null(choices) || length(choices) == 0) {
+      return(selectInput("refseq_gtf_id_source", "Use as gene_id", choices = c("Upload a GTF file first" = ""), selected = ""))
+    }
+
+    selected <- if ("db_xref_GenBank" %in% unname(choices)) {
+      "db_xref_GenBank"
+    } else if ("protein_id" %in% unname(choices)) {
+      "protein_id"
+    } else {
+      unname(choices)[1]
+    }
+    selectInput("refseq_gtf_id_source", "Use as gene_id", choices = choices, selected = selected)
+  })
+
+  output$refseq_gtf_status <- renderText({
+    rv$refseq_gtf_status %||% ""
+  })
+
+  observeEvent(input$refseq_gtf_file, {
+    req(input$refseq_gtf_file$datapath)
+    append_log("Scanning RefSeq GTF ID sources:", input$refseq_gtf_file$name, level = "STEP")
+    rv$refseq_gtf_status <- paste("Scanning ID sources in", input$refseq_gtf_file$name, "...")
+    withProgress(message = "Scanning RefSeq GTF", value = 0.2, {
+      tryCatch({
+        incProgress(0.3, detail = "Reading GTF attributes")
+        choices <- refseq_gtf_id_source_choices(input$refseq_gtf_file$datapath, max_rows = 50000)
+        if (length(choices) == 0) stop("No usable GTF attributes or db_xref IDs were found.")
+        rv$refseq_gtf_id_choices <- choices
+        rv$refseq_gtf_status <- paste("Found", length(choices), "ID sources. Choose one, then build the description file.")
+        showNotification(paste("Found", length(choices), "RefSeq GTF ID sources."), type = "message", duration = 5)
+        append_log("Found", length(choices), "RefSeq GTF ID sources in", input$refseq_gtf_file$name)
+      }, error = function(e) {
+        rv$refseq_gtf_id_choices <- NULL
+        rv$refseq_gtf_status <- paste("RefSeq GTF scan error:", e$message)
+        showNotification(e$message, type = "error", duration = 12)
+        append_log("RefSeq GTF scan error:", e$message)
+      })
+    })
+  }, ignoreInit = TRUE)
+
   observeEvent(input$load_annotation_file, {
     req(input$annotation_file$datapath)
     append_log("Loading annotation table:", input$annotation_file$name, level = "STEP")
@@ -1683,12 +2125,54 @@ server <- function(input, output, session) {
       ann <- normalize_annotation_table(read_any_table(input$annotation_file$datapath))
       rv$annotation_df <- ann
       rv$annotation_label <- paste("Uploaded file:", input$annotation_file$name)
+      rv$annotation_replace_gene_id <- FALSE
       rv$annotation_preview_ready <- TRUE
       if (!is.null(rv$de_base)) apply_current_annotation(reset_results = TRUE)
       append_log("Loaded annotation table:", nrow(ann), "rows from", input$annotation_file$name)
     }, error = function(e) {
       showNotification(e$message, type = "error", duration = 12)
       append_log("Annotation load error:", e$message)
+    })
+  })
+
+  observeEvent(input$build_refseq_gtf_annotations, {
+    req(input$refseq_gtf_file$datapath)
+    id_source <- input$refseq_gtf_id_source %||% ""
+    validate(need(nzchar(id_source), "Upload a GTF file and select an ID source."))
+    append_log("Building RefSeq GTF annotation table from", input$refseq_gtf_file$name, "using", id_source, level = "STEP")
+    rv$refseq_gtf_status <- paste("Building description file using", id_source, "...")
+    withProgress(message = "Building RefSeq GTF description file", value = 0.1, {
+      tryCatch({
+        incProgress(0.2, detail = "Parsing GTF attributes and db_xref IDs")
+        ann <- build_refseq_gtf_description_file(
+          input$refseq_gtf_file$datapath,
+          gene_id_source = id_source,
+          one_row_per_id = isTRUE(input$refseq_gtf_one_row_per_id)
+        )
+        incProgress(0.4, detail = "Normalizing annotation table")
+        ann <- normalize_annotation_table(ann)
+        rv$annotation_df <- ann
+        rv$annotation_label <- paste0("RefSeq GTF ", input$refseq_gtf_file$name, " using ", id_source)
+        rv$annotation_replace_gene_id <- TRUE
+        rv$annotation_preview_ready <- TRUE
+
+        detected <- detect_gene_id_type_from_values(ann$gene_id)
+        if (!is.null(detected) && !is.null(detected$keytype) && detected$keytype %in% gene_id_type_choices_for_orgdb(input$go_orgdb %||% NULL)) {
+          rv$detected_gene_id_type <- detected$keytype
+          rv$detected_gene_id_type_confidence <- detected$confidence
+          updateSelectInput(session, "go_keytype", selected = detected$keytype)
+        }
+
+        incProgress(0.3, detail = "Applying annotations to DE table")
+        if (!is.null(rv$de_base)) apply_current_annotation(reset_results = TRUE)
+        rv$refseq_gtf_status <- paste("Built", nrow(ann), "annotation rows from", input$refseq_gtf_file$name, "using", id_source)
+        showNotification(paste("Built RefSeq GTF annotation table:", nrow(ann), "rows."), type = "message", duration = 6)
+        append_log("Built RefSeq GTF annotation table:", nrow(ann), "rows from", input$refseq_gtf_file$name)
+      }, error = function(e) {
+        rv$refseq_gtf_status <- paste("RefSeq GTF annotation error:", e$message)
+        showNotification(e$message, type = "error", duration = 15)
+        append_log("RefSeq GTF annotation error:", e$message)
+      })
     })
   })
 
@@ -1744,6 +2228,8 @@ server <- function(input, output, session) {
       "Use default Arabidopsis description file"
     } else if (identical(tax_id, 9606L)) {
       "Use default human description file"
+    } else if (identical(tax_id, 511145L)) {
+      "Use default E. coli K-12 MG1655 description file"
     } else {
       "Use default organism description file"
     }
@@ -1787,12 +2273,16 @@ server <- function(input, output, session) {
 
   observeEvent(input$go_orgdb, {
     cfg <- organism_analysis_config[organism_analysis_config$orgdb == input$go_orgdb, , drop = FALSE]
+    go_available <- ensure_orgdb_installed(input$go_orgdb)
+    keytype_choices <- gene_id_type_choices_for_orgdb(input$go_orgdb)
+    selected_keytype <- input$go_keytype %||% rv$detected_gene_id_type %||% "ENTREZID"
     if (nrow(cfg) > 0) {
-      selected_keytype <- rv$detected_gene_id_type %||% cfg$go_keytype[1]
-      if (!selected_keytype %in% gene_id_type_choices) selected_keytype <- cfg$go_keytype[1]
-      updateSelectInput(session, "go_keytype", selected = selected_keytype)
+      selected_keytype <- rv$detected_gene_id_type %||% selected_keytype %||% cfg$go_keytype[1]
+      if (!selected_keytype %in% unname(keytype_choices)) selected_keytype <- cfg$go_keytype[1]
     }
-    rv$selected_go_available <- requireNamespace(input$go_orgdb, quietly = TRUE)
+    if (!selected_keytype %in% unname(keytype_choices)) selected_keytype <- unname(keytype_choices)[1]
+    updateSelectInput(session, "go_keytype", choices = keytype_choices, selected = selected_keytype)
+    rv$selected_go_available <- go_available
     rv$go_cache <- list()
   }, ignoreInit = TRUE)
 
@@ -1811,6 +2301,7 @@ server <- function(input, output, session) {
       if (is.null(ann) || nrow(ann) == 0) stop("Could not load annotation table from: ", url)
       rv$annotation_df <- ann
       rv$annotation_label <- label
+      rv$annotation_replace_gene_id <- FALSE
       rv$annotation_preview_ready <- TRUE
       if (!is.null(rv$de_base)) apply_current_annotation(reset_results = TRUE)
       append_log("Loaded", label, ":", nrow(ann), "rows.")
@@ -1821,29 +2312,44 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$build_uniprot_annotations, {
-    req(rv$de_base)
     tax_id <- suppressWarnings(as.integer(rv$selected_tax_id))
     validate(need(!is.na(tax_id) && tax_id > 0, "Enter a valid NCBI taxonomy ID."))
-    append_log("Building UniProt annotation table for tax_id", tax_id, level = "STEP")
+    id_source <- input$uniprot_id_source %||% ""
+    validate(need(nzchar(id_source), "Scan UniProt ID sources and select one before building."))
+    append_log("Building UniProt annotation table for tax_id", tax_id, "using", id_source, level = "STEP")
+    rv$uniprot_status <- paste("Building UniProt description file using", id_source, "...")
     withProgress(message = "Building UniProt description file", value = 0.1, {
       tryCatch({
         incProgress(0.2, detail = paste("Downloading UniProt annotations for tax_id", tax_id))
-        ids <- unique(rv$de_base["gene_id"])
         ann <- build_uniprot_description_file(
-          ids,
+          input_data = NULL,
           tax_id = tax_id,
           reviewed_only = isTRUE(input$annotation_reviewed_only),
+          gene_id_source = id_source,
           gene_id_type = input$go_keytype %||% NULL,
           orgdb = input$go_orgdb %||% NULL
         )
-        rv$annotation_label <- paste0("UniProt tax_id ", tax_id, if (isTRUE(input$annotation_reviewed_only)) " reviewed only" else "")
+        rv$annotation_label <- paste0("UniProt tax_id ", tax_id, " using ", id_source, if (isTRUE(input$annotation_reviewed_only)) " reviewed only" else "")
         ann <- normalize_annotation_table(ann)
         incProgress(0.6, detail = "Applying annotations to DE table")
         rv$annotation_df <- ann
+        rv$annotation_replace_gene_id <- TRUE
         rv$annotation_preview_ready <- TRUE
-        apply_current_annotation(reset_results = TRUE)
-        append_log("Built UniProt annotation table for tax_id", tax_id, ":", annotation_match_count(), "matched genes.")
+
+        detected <- detect_gene_id_type_from_values(ann$gene_id)
+        if (!is.null(detected) && !is.null(detected$keytype) && detected$keytype %in% gene_id_type_choices_for_orgdb(input$go_orgdb %||% NULL)) {
+          rv$detected_gene_id_type <- detected$keytype
+          rv$detected_gene_id_type_confidence <- detected$confidence
+          updateSelectInput(session, "go_keytype", selected = detected$keytype)
+        }
+
+        if (!is.null(rv$de_base)) apply_current_annotation(reset_results = TRUE)
+        match_count <- annotation_match_count()
+        rv$uniprot_status <- paste("Built", nrow(ann), "UniProt annotation rows using", id_source)
+        showNotification(paste("Built UniProt annotation table:", nrow(ann), "rows."), type = "message", duration = 6)
+        append_log("Built UniProt annotation table for tax_id", tax_id, "using", id_source, ":", ifelse(is.na(match_count), 0, match_count), "matched genes.")
       }, error = function(e) {
+        rv$uniprot_status <- paste("UniProt annotation error:", e$message)
         showNotification(e$message, type = "error", duration = 15)
         append_log("UniProt annotation error:", e$message)
       })
@@ -1936,6 +2442,126 @@ server <- function(input, output, session) {
     datatable(d, rownames = FALSE, filter = "top", options = list(pageLength = 15, scrollX = TRUE))
   })
 
+  output$go_gene_codes_ui <- renderUI({
+    d <- tryCatch(go_display_data(), error = function(e) NULL)
+    if ((is.null(d) || nrow(d) == 0) && rv$go_trigger > 0) {
+      d <- tryCatch(get_cached_go(input$go_direction), error = function(e) NULL)
+    }
+    if (!is.null(d) && nrow(d) > 0 && "GO.ID" %in% names(d)) {
+      ids <- stats::na.omit(as.character(d$GO.ID))
+      ids <- unique(ids[nzchar(ids)])
+      labels <- ids
+      if ("Term" %in% names(d)) {
+        terms_by_id <- stats::setNames(as.character(d$Term), as.character(d$GO.ID))
+        labels <- paste0(ids, " - ", terms_by_id[ids])
+        labels[is.na(labels) | !nzchar(labels)] <- ids[is.na(labels) | !nzchar(labels)]
+      }
+      return(selectizeInput(
+        "go_gene_codes",
+        "GO ID(s)",
+        choices = stats::setNames(ids, labels),
+        selected = head(ids, 3),
+        multiple = TRUE,
+        options = list(placeholder = "Type to search GO IDs", plugins = list("remove_button"))
+      ))
+    }
+    selectizeInput(
+      "go_gene_codes",
+      "GO ID(s)",
+      choices = c("GO:0008150"),
+      selected = "GO:0008150",
+      multiple = TRUE,
+      options = list(create = TRUE, placeholder = "Example: GO:0008150", plugins = list("remove_button"))
+    )
+  })
+
+  observeEvent(input$run_go_gene_lookup, {
+    req(rv$de)
+    append_log("Looking up GO genes for", input$go_gene_codes, level = "STEP")
+    withProgress(message = "Looking up GO genes", value = 0.2, {
+      tryCatch({
+        genes <- make_go_gene_table(
+          rv$de,
+          go_ids = input$go_gene_codes,
+          ontology = input$ontology %||% "BP",
+          orgdb = input$go_orgdb %||% "org.At.tair.db",
+          keytype = input$go_keytype %||% "TAIR",
+          alpha = input$alpha,
+          lfc_cutoff = input$lfc_cutoff
+        )
+        rv$go_genes <- genes
+        if (nrow(genes) > 0) {
+          rv$go_gene_lookup <- stats::aggregate(
+            gene_id ~ GO_ID + GO_term,
+            data = genes,
+            FUN = function(x) length(unique(x))
+          )
+          names(rv$go_gene_lookup)[names(rv$go_gene_lookup) == "gene_id"] <- "Matched_loaded_genes"
+        } else {
+          rv$go_gene_lookup <- data.frame()
+        }
+        append_log("GO gene lookup completed:", nrow(rv$go_genes), "matched gene rows.")
+      }, error = function(e) {
+        rv$go_gene_lookup <- NULL
+        rv$go_genes <- NULL
+        showNotification(paste("GO gene lookup error:", e$message), type = "error", duration = 15)
+        append_log("GO gene lookup error:", e$message)
+      })
+    })
+  })
+
+  output$go_genes_table <- renderDT({
+    req(rv$go_genes)
+    d <- rv$go_genes
+    req(nrow(d) > 0)
+    keep_cols <- c("gene_id", "original_gene_id", "GO_ID", "GO_term", "Symbol", "log2FoldChange", "pValue", "padj", "DE_class", "short_description", "Protein_name")
+    d <- d[, intersect(keep_cols, names(d)), drop = FALSE]
+    d <- d[order(d$GO_ID, d$padj, d$pValue, na.last = TRUE), , drop = FALSE]
+    d <- d[!duplicated(d[, intersect(c("gene_id", "GO_ID"), names(d)), drop = FALSE]), , drop = FALSE]
+    button_data <- add_gene_count_buttons(d)
+    datatable(button_data$data, rownames = FALSE, filter = "top", escape = !button_data$has_buttons,
+              options = list(
+                pageLength = 15,
+                scrollX = TRUE,
+                autoWidth = FALSE,
+                columnDefs = if (button_data$has_buttons) gene_count_button_defs else list()
+              ),
+              callback = if (button_data$has_buttons) gene_count_button_callback else JS(""))
+  })
+
+  go_genes_volcano_reactive <- reactive({
+    req(rv$go_genes)
+    d <- rv$go_genes
+    req(nrow(d) > 0)
+    plot_df <- d[order(d$padj, d$pValue, na.last = TRUE), , drop = FALSE]
+    plot_df <- plot_df[!duplicated(plot_df$gene_id), , drop = FALSE]
+    go_label <- paste(unique(d$GO_ID), collapse = ", ")
+    if (nchar(go_label) > 80) go_label <- paste0(substr(go_label, 1, 77), "...")
+    make_gene_group_volcano_plot(
+      plot_df,
+      paste0("GO genes: ", go_label),
+      alpha = input$alpha,
+      lfc_cutoff = input$lfc_cutoff,
+      color_up = input$color_up %||% "#B2182B",
+      color_down = input$color_down %||% "#2166AC",
+      color_ns = input$color_ns %||% "#B3B3B3",
+      plot_theme = input$plot_theme %||% "classic",
+      font_family = input$plot_font_family %||% "serif"
+    )
+  })
+
+  output$go_genes_volcano <- renderPlot({
+    if (is.null(rv$go_gene_lookup)) {
+      plot.new(); text(0.5, 0.5, "Enter GO ID(s) and click 'Find genes'.", cex = 1.1)
+    } else if (is.null(rv$go_genes) || nrow(rv$go_genes) == 0) {
+      plot.new(); text(0.5, 0.5, "No loaded genes matched the selected GO term(s).", cex = 1.1)
+    } else {
+      tryCatch(go_genes_volcano_reactive(), error = function(e) {
+        plot.new(); text(0.5, 0.5, e$message, cex = 1.1)
+      })
+    }
+  }, width = function() input$go_plot_width, height = function() input$go_plot_height)
+
   output$msigdb_run_ui <- renderUI({
     if (length(msigdb_species_choices) == 0) {
       return(div(class = "muted", "Install msigdbr to enable Hallmark analysis."))
@@ -2011,6 +2637,126 @@ server <- function(input, output, session) {
     req(!is.null(d) && nrow(d) > 0)
     datatable(d, rownames = FALSE, filter = "top", options = list(pageLength = 15, scrollX = TRUE))
   })
+
+  output$hallmark_gene_codes_ui <- renderUI({
+    d <- tryCatch(msigdb_display_data(), error = function(e) NULL)
+    if ((is.null(d) || nrow(d) == 0) && !is.null(rv$msigdb_enrichment)) {
+      d <- rv$msigdb_enrichment
+    }
+    if (!is.null(d) && nrow(d) > 0 && "Hallmark" %in% names(d)) {
+      ids <- stats::na.omit(as.character(d$Hallmark))
+      ids <- unique(ids[nzchar(ids)])
+      labels <- ids
+      if ("Term" %in% names(d)) {
+        terms_by_id <- stats::setNames(as.character(d$Term), as.character(d$Hallmark))
+        labels <- paste0(ids, " - ", terms_by_id[ids])
+        labels[is.na(labels) | !nzchar(labels)] <- ids[is.na(labels) | !nzchar(labels)]
+      }
+      return(selectizeInput(
+        "hallmark_gene_codes",
+        "Hallmark code(s)",
+        choices = stats::setNames(ids, labels),
+        selected = head(ids, 3),
+        multiple = TRUE,
+        options = list(placeholder = "Type to search Hallmark codes", plugins = list("remove_button"))
+      ))
+    }
+    selectizeInput(
+      "hallmark_gene_codes",
+      "Hallmark code(s)",
+      choices = c("HALLMARK_OXIDATIVE_PHOSPHORYLATION"),
+      selected = "HALLMARK_OXIDATIVE_PHOSPHORYLATION",
+      multiple = TRUE,
+      options = list(create = TRUE, placeholder = "Example: HALLMARK_OXIDATIVE_PHOSPHORYLATION", plugins = list("remove_button"))
+    )
+  })
+
+  observeEvent(input$run_hallmark_gene_lookup, {
+    req(rv$de)
+    validate(need(msigdb_species_available(input$msigdb_species), "Select an available MSigDB species."))
+    append_log("Looking up Hallmark genes for", input$hallmark_gene_codes, level = "STEP")
+    withProgress(message = "Looking up Hallmark genes", value = 0.2, {
+      tryCatch({
+        genes <- make_msigdb_hallmark_gene_table(
+          rv$de,
+          hallmark_ids = input$hallmark_gene_codes,
+          species = input$msigdb_species %||% rv$selected_organism_label,
+          keytype = input$go_keytype %||% "SYMBOL",
+          alpha = input$alpha,
+          lfc_cutoff = input$lfc_cutoff
+        )
+        rv$hallmark_genes <- genes
+        if (nrow(genes) > 0) {
+          rv$hallmark_gene_lookup <- stats::aggregate(
+            gene_id ~ Hallmark + Hallmark_term,
+            data = genes,
+            FUN = function(x) length(unique(x))
+          )
+          names(rv$hallmark_gene_lookup)[names(rv$hallmark_gene_lookup) == "gene_id"] <- "Matched_loaded_genes"
+        } else {
+          rv$hallmark_gene_lookup <- data.frame()
+        }
+        append_log("Hallmark gene lookup completed:", nrow(rv$hallmark_genes), "matched gene rows.")
+      }, error = function(e) {
+        rv$hallmark_gene_lookup <- NULL
+        rv$hallmark_genes <- NULL
+        showNotification(paste("Hallmark gene lookup error:", e$message), type = "error", duration = 15)
+        append_log("Hallmark gene lookup error:", e$message)
+      })
+    })
+  })
+
+  output$hallmark_genes_table <- renderDT({
+    req(rv$hallmark_genes)
+    d <- rv$hallmark_genes
+    req(nrow(d) > 0)
+    keep_cols <- c("gene_id", "original_gene_id", "Hallmark", "Hallmark_term", "Symbol", "log2FoldChange", "pValue", "padj", "DE_class", "short_description", "Protein_name")
+    d <- d[, intersect(keep_cols, names(d)), drop = FALSE]
+    d <- d[order(d$Hallmark, d$padj, d$pValue, na.last = TRUE), , drop = FALSE]
+    d <- d[!duplicated(d[, intersect(c("gene_id", "Hallmark"), names(d)), drop = FALSE]), , drop = FALSE]
+    button_data <- add_gene_count_buttons(d)
+    datatable(button_data$data, rownames = FALSE, filter = "top", escape = !button_data$has_buttons,
+              options = list(
+                pageLength = 15,
+                scrollX = TRUE,
+                autoWidth = FALSE,
+                columnDefs = if (button_data$has_buttons) gene_count_button_defs else list()
+              ),
+              callback = if (button_data$has_buttons) gene_count_button_callback else JS(""))
+  })
+
+  hallmark_genes_volcano_reactive <- reactive({
+    req(rv$hallmark_genes)
+    d <- rv$hallmark_genes
+    req(nrow(d) > 0)
+    plot_df <- d[order(d$padj, d$pValue, na.last = TRUE), , drop = FALSE]
+    plot_df <- plot_df[!duplicated(plot_df$gene_id), , drop = FALSE]
+    hallmark_label <- paste(unique(d$Hallmark), collapse = ", ")
+    if (nchar(hallmark_label) > 80) hallmark_label <- paste0(substr(hallmark_label, 1, 77), "...")
+    make_gene_group_volcano_plot(
+      plot_df,
+      paste0("Hallmark genes: ", hallmark_label),
+      alpha = input$alpha,
+      lfc_cutoff = input$lfc_cutoff,
+      color_up = input$color_up %||% "#B2182B",
+      color_down = input$color_down %||% "#2166AC",
+      color_ns = input$color_ns %||% "#B3B3B3",
+      plot_theme = input$plot_theme %||% "classic",
+      font_family = input$plot_font_family %||% "serif"
+    )
+  })
+
+  output$hallmark_genes_volcano <- renderPlot({
+    if (is.null(rv$hallmark_gene_lookup)) {
+      plot.new(); text(0.5, 0.5, "Enter Hallmark code(s) and click 'Find genes'.", cex = 1.1)
+    } else if (is.null(rv$hallmark_genes) || nrow(rv$hallmark_genes) == 0) {
+      plot.new(); text(0.5, 0.5, "No loaded genes matched the selected Hallmark set(s).", cex = 1.1)
+    } else {
+      tryCatch(hallmark_genes_volcano_reactive(), error = function(e) {
+        plot.new(); text(0.5, 0.5, e$message, cex = 1.1)
+      })
+    }
+  }, width = function() input$msigdb_plot_width, height = function() input$msigdb_plot_height)
 
   output$pmn_run_ui <- renderUI({
     selected_db <- trimws(input$pmn_cyc_db %||% "")
@@ -2169,6 +2915,7 @@ server <- function(input, output, session) {
               options = list(
                 pageLength = 15,
                 scrollX = TRUE,
+                autoWidth = FALSE,
                 columnDefs = if (button_data$has_buttons) gene_count_button_defs else list()
               ),
               callback = if (button_data$has_buttons) gene_count_button_callback else JS(""))
@@ -2459,6 +3206,7 @@ server <- function(input, output, session) {
               options = list(
                 pageLength = 12,
                 scrollX = TRUE,
+                autoWidth = FALSE,
                 columnDefs = if (button_data$has_buttons) gene_count_button_defs else list()
               ),
               callback = if (button_data$has_buttons) gene_count_button_callback else JS(""))
@@ -2532,12 +3280,40 @@ server <- function(input, output, session) {
       req(!is.null(d)); write.csv(d, file, row.names = FALSE)
     }
   )
+  output$download_go_genes_volcano <- download_plot_server(
+    go_genes_volcano_reactive,
+    reactive(input$format_go_genes_volcano),
+    reactive(paste0("GO_genes_volcano_", gsub("[^A-Za-z0-9]+", "_", paste(input$go_gene_codes %||% "GO", collapse = "_")))),
+    reactive(input$go_plot_width),
+    reactive(input$go_plot_height)
+  )
+  output$download_go_genes_table <- downloadHandler(
+    filename = function() paste0("GO_genes_", input$ontology %||% "BP", "_", Sys.Date(), ".csv"),
+    content = function(file) {
+      req(rv$go_genes)
+      write.csv(rv$go_genes, file, row.names = FALSE)
+    }
+  )
   output$download_msigdb <- download_plot_server(msigdb_plot_reactive, reactive(input$format_msigdb), "MSigDB_Hallmark", reactive(input$msigdb_plot_width), reactive(input$msigdb_plot_height))
   output$download_msigdb_table <- downloadHandler(
     filename = function() paste0("MSigDB_Hallmark_", input$msigdb_direction, "_", Sys.Date(), ".csv"),
     content = function(file) {
       d <- tryCatch(msigdb_display_data(), error = function(e) NULL)
       req(!is.null(d)); write.csv(d, file, row.names = FALSE)
+    }
+  )
+  output$download_hallmark_genes_volcano <- download_plot_server(
+    hallmark_genes_volcano_reactive,
+    reactive(input$format_hallmark_genes_volcano),
+    reactive(paste0("Hallmark_genes_volcano_", gsub("[^A-Za-z0-9]+", "_", paste(input$hallmark_gene_codes %||% "Hallmark", collapse = "_")))),
+    reactive(input$msigdb_plot_width),
+    reactive(input$msigdb_plot_height)
+  )
+  output$download_hallmark_genes_table <- downloadHandler(
+    filename = function() paste0("Hallmark_genes_", Sys.Date(), ".csv"),
+    content = function(file) {
+      req(rv$hallmark_genes)
+      write.csv(rv$hallmark_genes, file, row.names = FALSE)
     }
   )
   output$download_pmn <- download_plot_server(
@@ -2710,6 +3486,7 @@ server <- function(input, output, session) {
               options = list(
                 pageLength = 15,
                 scrollX = TRUE,
+                autoWidth = FALSE,
                 columnDefs = if (button_data$has_buttons) gene_count_button_defs else list()
               ),
               callback = if (button_data$has_buttons) gene_count_button_callback else JS(""))
@@ -2861,6 +3638,7 @@ server <- function(input, output, session) {
               options = list(
                 pageLength = 15,
                 scrollX = TRUE,
+                autoWidth = FALSE,
                 columnDefs = if (button_data$has_buttons) gene_count_button_defs else list()
               ),
               callback = if (button_data$has_buttons) gene_count_button_callback else JS(""))
@@ -3139,7 +3917,9 @@ server <- function(input, output, session) {
           plot.col.key = isTRUE(input$pathview_plot_col_key),
           key.pos = input$pathview_key_pos %||% "topright",
           new.signature = FALSE,
-          gene.idtype = "TAIR"
+          # Genes are mapped to KEGG IDs before calling Pathview; avoid forcing
+          # Arabidopsis-only TAIR IDs for featureCounts or non-ATH inputs.
+          gene.idtype = "KEGG"
         )
         rv$pathview_table <- pathview_result_table(sig_df, pv_res)
         
@@ -3202,6 +3982,7 @@ server <- function(input, output, session) {
               options = list(
                 pageLength = 15,
                 scrollX = TRUE,
+                autoWidth = FALSE,
                 columnDefs = if (button_data$has_buttons) gene_count_button_defs else list()
               ),
               callback = if (button_data$has_buttons) gene_count_button_callback else JS(""))

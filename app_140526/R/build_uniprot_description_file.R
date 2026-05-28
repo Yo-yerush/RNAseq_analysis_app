@@ -3,6 +3,150 @@
 # Downloads one organism's UniProt annotation and maps it to input gene IDs.
 ############################################################
 
+uniprot_required_packages <- function(extra = character()) {
+  required <- unique(c("dplyr", "readr", "tidyr", "stringr", extra))
+  missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
+  if (length(missing)) {
+    stop("Missing required packages: ", paste(missing, collapse = ", "))
+  }
+}
+
+uniprot_annotation_field_ids <- function() {
+  c(
+    "accession",
+    "id",
+    "gene_names",
+    "gene_primary",
+    "gene_synonym",
+    "gene_oln",
+    "gene_orf",
+    "xref_geneid",
+    "xref_refseq",
+    "xref_ensembl",
+    "organism_name",
+    "organism_id",
+    "protein_name",
+    "cc_function",
+    "go_p",
+    "go_f",
+    "go_c",
+    "xref_kegg"
+  )
+}
+
+download_uniprot_annotation <- function(tax_id = 3702, reviewed_only = FALSE, size = NULL) {
+  uniprot_required_packages("readr")
+  query <- paste0("organism_id:", tax_id)
+  if (isTRUE(reviewed_only)) query <- paste0(query, " AND reviewed:true")
+
+  fields <- paste(uniprot_annotation_field_ids(), collapse = ",")
+  endpoint <- if (is.null(size)) "stream" else "search"
+  if (!is.null(size)) size <- min(as.integer(size), 500L)
+  url <- paste0(
+    "https://rest.uniprot.org/uniprotkb/", endpoint, "?",
+    "query=", utils::URLencode(query, reserved = TRUE),
+    "&fields=", fields,
+    "&format=tsv"
+  )
+  if (!is.null(size)) url <- paste0(url, "&size=", as.integer(size))
+
+  message("Downloading UniProt annotation for tax_id = ", tax_id)
+  uniprot_df <- readr::read_tsv(url, show_col_types = FALSE, progress = FALSE)
+  if (nrow(uniprot_df) == 0) stop("UniProt returned no records for tax_id ", tax_id, ".")
+  colnames(uniprot_df) <- make.names(colnames(uniprot_df))
+
+  for (cc in c("Entry", "Entry.Name", "Gene.Names", "Gene.Names..primary.",
+               "Gene.Names..synonym.", "Gene.Names..ordered.locus.",
+               "Gene.Names..ORF.", "Organism", "Organism..ID.",
+               "GeneID", "RefSeq", "Ensembl",
+               "Protein.names", "Function..CC.",
+               "Gene.Ontology..biological.process.",
+               "Gene.Ontology..molecular.function.",
+               "Gene.Ontology..cellular.component.",
+               "Cross.reference..KEGG.")) {
+    if (!cc %in% colnames(uniprot_df)) uniprot_df[[cc]] <- NA_character_
+  }
+
+  copy_uniprot_alias <- function(target, candidates) {
+    hit <- candidates[candidates %in% colnames(uniprot_df)]
+    if (length(hit) == 0) return(invisible(NULL))
+    if (!target %in% colnames(uniprot_df) || all(is.na(uniprot_df[[target]]) | uniprot_df[[target]] == "")) {
+      uniprot_df[[target]] <<- uniprot_df[[hit[1]]]
+    }
+    invisible(NULL)
+  }
+  copy_uniprot_alias("Cross.reference..KEGG.", c("KEGG", "Cross.reference..KEGG."))
+
+  uniprot_df
+}
+
+uniprot_id_columns <- function(uniprot_df) {
+  annotation_cols <- c(
+    "Organism", "Organism..ID.", "Protein.names", "Function..CC.",
+    "Gene.Ontology..biological.process.",
+    "Gene.Ontology..molecular.function.",
+    "Gene.Ontology..cellular.component.",
+    "Cross.reference..KEGG."
+  )
+  setdiff(colnames(uniprot_df), annotation_cols)
+}
+
+uniprot_split_ids <- function(x) {
+  x <- as.character(x)
+  x <- x[!is.na(x) & nzchar(trimws(x))]
+  if (!length(x)) return(character())
+  ids <- unlist(strsplit(x, "[;, ]+"), use.names = FALSE)
+  ids <- trimws(ids)
+  unique(ids[!is.na(ids) & nzchar(ids) & ids != "-"])
+}
+
+uniprot_id_source_table <- function(tax_id = 3702, reviewed_only = FALSE, max_records = 500) {
+  uniprot_df <- download_uniprot_annotation(tax_id = tax_id, reviewed_only = reviewed_only, size = max_records)
+  id_cols <- uniprot_id_columns(uniprot_df)
+
+  rows <- lapply(id_cols, function(col) {
+    vals <- uniprot_split_ids(uniprot_df[[col]])
+    data.frame(
+      source = col,
+      label = col,
+      non_empty = sum(!is.na(uniprot_df[[col]]) & nzchar(trimws(as.character(uniprot_df[[col]])))),
+      unique_values = length(vals),
+      stringsAsFactors = FALSE
+    )
+  })
+  out <- do.call(rbind, rows)
+  out <- out[out$non_empty > 0, , drop = FALSE]
+
+  preferred <- c("Entry", "Gene.Names..ordered.locus.", "Gene.Names..primary.", "GeneID", "RefSeq", "Ensembl", "Gene.Names", "Entry.Name")
+  out$rank <- match(out$source, preferred)
+  out$rank[is.na(out$rank)] <- length(preferred) + seq_len(sum(is.na(match(out$source, preferred))))
+  out <- out[order(out$rank, tolower(out$label)), c("source", "label", "non_empty", "unique_values"), drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
+uniprot_id_source_choices <- function(tax_id = 3702, reviewed_only = FALSE, max_records = 500) {
+  sources <- uniprot_id_source_table(tax_id = tax_id, reviewed_only = reviewed_only, max_records = max_records)
+  stats::setNames(sources$source, paste0(sources$label, " (", sources$unique_values, " IDs)"))
+}
+
+resolve_uniprot_id_source <- function(gene_id_source, available_cols) {
+  if (is.null(gene_id_source) || !nzchar(gene_id_source)) {
+    preferred <- c("Gene.Names..ordered.locus.", "Gene.Names..primary.", "GeneID", "RefSeq", "Entry", "Gene.Names")
+    hit <- preferred[preferred %in% available_cols]
+    if (length(hit)) return(hit[1])
+    return(available_cols[1])
+  }
+
+  if (gene_id_source %in% available_cols) return(gene_id_source)
+  hit <- available_cols[tolower(available_cols) == tolower(make.names(gene_id_source))]
+  if (length(hit)) return(hit[1])
+  stop(
+    "ID source '", gene_id_source, "' was not found in the UniProt table. Available sources: ",
+    paste(available_cols, collapse = ", ")
+  )
+}
+
 search_uniprot_taxonomy <- function(query, size = 50) {
   if (!requireNamespace("readr", quietly = TRUE)) {
     stop("Missing required package: readr")
@@ -133,22 +277,20 @@ build_orgdb_uniprot_bridge <- function(input_data, key_fun, uniprot_ids,
   matched
 }
 
-build_uniprot_description_file <- function(input_data,
+build_uniprot_description_file <- function(input_data = NULL,
                                            tax_id = 3702,
                                            reviewed_only = FALSE,
+                                           gene_id_source = NULL,
                                            gene_id_type = NULL,
                                            orgdb = NULL,
                                            output_dir = NULL) {
-  required <- c("dplyr", "readr", "tidyr", "stringr")
-  missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
-  if (length(missing)) {
-    stop("Missing required packages: ", paste(missing, collapse = ", "))
+  uniprot_required_packages()
+
+  if (!is.null(input_data)) {
+    input_data <- as.data.frame(input_data, check.names = FALSE)
+    if (nrow(input_data) == 0) stop("Input data has no rows.")
+    names(input_data)[1] <- "gene_id"
   }
-
-  input_data <- as.data.frame(input_data, check.names = FALSE)
-  if (nrow(input_data) == 0) stop("Input data has no rows.")
-
-  names(input_data)[1] <- "gene_id"
 
   key_fun <- if (exists("gene_join_key", mode = "function")) {
     gene_join_key
@@ -156,62 +298,14 @@ build_uniprot_description_file <- function(input_data,
     function(x) toupper(sub("^.*:", "", sub("\\.[0-9]+$", "", trimws(as.character(x)))))
   }
 
-  input_data$gene_id <- trimws(as.character(input_data$gene_id))
-  input_data$annotation_key <- key_fun(input_data$gene_id)
-  input_data <- input_data[!is.na(input_data$annotation_key) & input_data$annotation_key != "", , drop = FALSE]
-
-  query <- paste0("organism_id:", tax_id)
-  if (isTRUE(reviewed_only)) query <- paste0(query, " AND reviewed:true")
-
-  fields <- paste(c(
-    "accession",
-    "id",
-    "gene_names",
-    "gene_primary",
-    "gene_synonym",
-    "gene_oln",
-    "gene_orf",
-    "xref_geneid",
-    "xref_ensembl",
-    "organism_name",
-    "organism_id",
-    "protein_name",
-    "cc_function",
-    "go_p",
-    "go_f",
-    "go_c",
-    "xref_kegg"
-  ), collapse = ",")
-
-  url <- paste0(
-    "https://rest.uniprot.org/uniprotkb/stream?",
-    "query=", utils::URLencode(query, reserved = TRUE),
-    "&fields=", utils::URLencode(fields, reserved = TRUE),
-    "&format=tsv"
-  )
-
-  message("Downloading UniProt annotation for tax_id = ", tax_id)
-  uniprot_df <- readr::read_tsv(url, show_col_types = FALSE, progress = FALSE)
-  if (nrow(uniprot_df) == 0) stop("UniProt returned no records for tax_id ", tax_id, ".")
-  colnames(uniprot_df) <- make.names(colnames(uniprot_df))
-
-  for (cc in c("Entry", "Entry.Name", "Gene.Names", "Organism", "Organism..ID.",
-               "GeneID", "Ensembl",
-               "Protein.names", "Function..CC.",
-               "Gene.Ontology..biological.process.",
-               "Gene.Ontology..molecular.function.",
-               "Gene.Ontology..cellular.component.",
-               "Cross.reference..KEGG.")) {
-    if (!cc %in% colnames(uniprot_df)) uniprot_df[[cc]] <- NA_character_
+  if (!is.null(input_data)) {
+    input_data$gene_id <- trimws(as.character(input_data$gene_id))
+    input_data$annotation_key <- key_fun(input_data$gene_id)
+    input_data <- input_data[!is.na(input_data$annotation_key) & input_data$annotation_key != "", , drop = FALSE]
   }
 
-  annotation_cols <- c(
-    "Organism", "Organism..ID.", "Protein.names", "Function..CC.",
-    "Gene.Ontology..biological.process.",
-    "Gene.Ontology..molecular.function.",
-    "Gene.Ontology..cellular.component."
-  )
-  id_cols <- setdiff(colnames(uniprot_df), annotation_cols)
+  uniprot_df <- download_uniprot_annotation(tax_id = tax_id, reviewed_only = reviewed_only)
+  id_cols <- uniprot_id_columns(uniprot_df)
 
   all_ids_df <- uniprot_df |>
     dplyr::mutate(
@@ -255,19 +349,21 @@ build_uniprot_description_file <- function(input_data,
     dplyr::slice(1) |>
     dplyr::ungroup()
 
-  orgdb_bridge <- build_orgdb_uniprot_bridge(
-    input_data = input_data,
-    key_fun = key_fun,
-    uniprot_ids = all_ids_df_one_match,
-    gene_id_type = gene_id_type,
-    orgdb = orgdb
-  )
-  if (nrow(orgdb_bridge) > 0) {
-    all_ids_df_one_match <- dplyr::bind_rows(orgdb_bridge, all_ids_df_one_match) |>
-      dplyr::filter(!is.na(.data$annotation_key), .data$annotation_key != "") |>
-      dplyr::group_by(.data$annotation_key) |>
-      dplyr::slice(1) |>
-      dplyr::ungroup()
+  if (!is.null(input_data)) {
+    orgdb_bridge <- build_orgdb_uniprot_bridge(
+      input_data = input_data,
+      key_fun = key_fun,
+      uniprot_ids = all_ids_df_one_match,
+      gene_id_type = gene_id_type,
+      orgdb = orgdb
+    )
+    if (nrow(orgdb_bridge) > 0) {
+      all_ids_df_one_match <- dplyr::bind_rows(orgdb_bridge, all_ids_df_one_match) |>
+        dplyr::filter(!is.na(.data$annotation_key), .data$annotation_key != "") |>
+        dplyr::group_by(.data$annotation_key) |>
+        dplyr::slice(1) |>
+        dplyr::ungroup()
+    }
   }
 
   uniprot_annotation <- uniprot_df |>
@@ -275,6 +371,13 @@ build_uniprot_description_file <- function(input_data,
       UniProt = .data$Entry,
       UniProt_entry = .data$Entry.Name,
       UniProt_gene_names = .data$Gene.Names,
+      UniProt_primary_gene = .data$Gene.Names..primary.,
+      UniProt_gene_synonyms = .data$Gene.Names..synonym.,
+      UniProt_ordered_locus = .data$Gene.Names..ordered.locus.,
+      UniProt_ORF = .data$Gene.Names..ORF.,
+      GeneID = .data$GeneID,
+      RefSeq = .data$RefSeq,
+      Ensembl = .data$Ensembl,
       Organism = .data$Organism,
       Organism_ID = .data$Organism..ID.,
       Protein_name = .data$Protein.names,
@@ -284,6 +387,54 @@ build_uniprot_description_file <- function(input_data,
       GO_cellular_component = .data$Gene.Ontology..cellular.component.,
       KEGG_pathway = .data$Cross.reference..KEGG.
     )
+
+  if (!is.null(gene_id_source) || is.null(input_data)) {
+    selected_source <- resolve_uniprot_id_source(gene_id_source, id_cols)
+    selected_ids <- all_ids_df |>
+      dplyr::filter(.data$id_source == selected_source) |>
+      dplyr::transmute(
+        gene_id = .data$gene_id_for_merge,
+        annotation_key = .data$annotation_key,
+        UniProt = .data$UniProt,
+        UniProt_entry = .data$UniProt_entry,
+        id_source = .data$id_source
+      ) |>
+      dplyr::filter(!is.na(.data$gene_id), .data$gene_id != "") |>
+      dplyr::group_by(.data$annotation_key) |>
+      dplyr::slice(1) |>
+      dplyr::ungroup()
+
+    if (!is.null(input_data)) {
+      keep_keys <- unique(input_data$annotation_key)
+      selected_ids <- selected_ids |>
+        dplyr::filter(.data$annotation_key %in% keep_keys)
+    }
+
+    final_df <- selected_ids |>
+      dplyr::left_join(uniprot_annotation, by = c("UniProt", "UniProt_entry")) |>
+      dplyr::mutate(
+        Symbol = sub(" .*", "", .data$UniProt_gene_names),
+        Symbol = ifelse(is.na(.data$Symbol) | toupper(.data$Symbol) == toupper(.data$gene_id), NA, .data$Symbol)
+      ) |>
+      dplyr::select(-annotation_key) |>
+      dplyr::relocate(Symbol, .before = dplyr::any_of("Protein_name")) |>
+      dplyr::relocate(
+        dplyr::any_of(c("id_source", "UniProt_gene_names", "UniProt_primary_gene", "UniProt_gene_synonyms",
+                        "UniProt_ordered_locus", "UniProt_ORF", "GeneID", "RefSeq", "Ensembl",
+                        "UniProt", "UniProt_entry", "Organism", "Organism_ID")),
+        .after = dplyr::last_col()
+      )
+
+    if (!is.null(output_dir)) {
+      dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+      safe_source <- gsub("[^A-Za-z0-9_]+", "_", selected_source)
+      out_path <- file.path(output_dir, paste0("uniprot_description_taxid_", tax_id, "_", safe_source, "_", Sys.Date(), ".csv"))
+      utils::write.csv(final_df, out_path, row.names = FALSE)
+      attr(final_df, "path") <- out_path
+    }
+
+    return(final_df)
+  }
 
   final_df <- input_data |>
     dplyr::left_join(all_ids_df_one_match, by = "annotation_key") |>
@@ -295,7 +446,9 @@ build_uniprot_description_file <- function(input_data,
     dplyr::select(-annotation_key, -dplyr::any_of("gene_id_for_merge")) |>
     dplyr::relocate(Symbol, .before = dplyr::any_of("Protein_name")) |>
     dplyr::relocate(
-      dplyr::any_of(c("id_source", "UniProt_gene_names", "UniProt", "UniProt_entry", "Organism", "Organism_ID")),
+      dplyr::any_of(c("id_source", "UniProt_gene_names", "UniProt_primary_gene", "UniProt_gene_synonyms",
+                      "UniProt_ordered_locus", "UniProt_ORF", "GeneID", "RefSeq", "Ensembl",
+                      "UniProt", "UniProt_entry", "Organism", "Organism_ID")),
       .after = dplyr::last_col()
     )
 

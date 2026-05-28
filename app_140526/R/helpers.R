@@ -20,6 +20,20 @@ gene_join_key <- function(x) {
   toupper(x)
 }
 
+normalize_orgdb_gene_keys <- function(x, orgdb = NULL, keytype = NULL) {
+  keytype <- toupper(keytype %||% "")
+  out <- clean_gene_id(x)
+
+  # org.EcK12.eg.db stores most E. coli K-12 Blattner b-numbers as ECK aliases.
+  # RefSeq accessions such as NP_414542 are handled by REFSEQ/ACCNUM directly.
+  if (identical(orgdb, "org.EcK12.eg.db") && identical(keytype, "ALIAS")) {
+    hit <- grepl("^b[0-9]{4}$", out, ignore.case = TRUE)
+    out[hit] <- paste0("ECK", sub("^[bB]", "", out[hit]))
+  }
+
+  out
+}
+
 as_numeric_p <- function(x) {
   if (is.numeric(x)) return(x)
   x <- trimws(as.character(x))
@@ -50,6 +64,7 @@ is_remote_path <- function(path) {
 
 DEFAULT_ARABIDOPSIS_DESCRIPTION_URL <- "https://github.com/Yo-yerush/RA_lab_db/raw/refs/heads/main/description_files/At_custom_description_file.csv.gz"
 DEFAULT_HUMAN_DESCRIPTION_URL <- "https://github.com/Yo-yerush/RA_lab_db/raw/refs/heads/main/description_files/Hs_description_file.csv.gz"
+DEFAULT_MG1655_DESCRIPTION_URL <- "https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/MG1655_description_file.csv"
 DEFAULT_TAIR_TE_URL <- "https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/TAIR10_Transposable_Elements.txt"
 DEFAULT_AT_GENE_FAMILIES_URL <- "https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/gene_families_sep_29_09_update.txt"
 DEFAULT_HGNC_FAMILY_URL <- "https://storage.googleapis.com/public-download-files/hgnc/csv/csv/genefamily_db_tables/family.csv"
@@ -62,6 +77,7 @@ default_description_file_url <- function(tax_id = 3702) {
   tax_id <- suppressWarnings(as.integer(tax_id))
   if (identical(tax_id, 3702L)) return(DEFAULT_ARABIDOPSIS_DESCRIPTION_URL)
   if (identical(tax_id, 9606L)) return(DEFAULT_HUMAN_DESCRIPTION_URL)
+  if (identical(tax_id, 511145L)) return(DEFAULT_MG1655_DESCRIPTION_URL)
   NULL
 }
 
@@ -154,6 +170,68 @@ normalize_annotation_table <- function(desc) {
   desc <- desc[!duplicated(desc$annotation_key), , drop = FALSE]
   desc
 }
+
+annotation_id_lookup_columns <- function(desc) {
+  if (is.null(desc) || ncol(desc) == 0) return(character())
+  id_patterns <- paste(c(
+    "^gene_id$",
+    "gene.?id",
+    "refseq",
+    "genbank",
+    "locus",
+    "tag",
+    "protein.?id",
+    "transcript.?id",
+    "uniprot",
+    "geneid",
+    "entrez",
+    "ensembl",
+    "alias",
+    "symbol"
+  ), collapse = "|")
+  cols <- names(desc)[grepl(id_patterns, names(desc), ignore.case = TRUE)]
+  setdiff(unique(c("gene_id", cols)), "annotation_key")
+}
+
+make_annotation_lookup <- function(desc, id_cols = NULL) {
+  desc <- normalize_annotation_table(desc)
+  if (is.null(id_cols)) id_cols <- annotation_id_lookup_columns(desc)
+  id_cols <- intersect(id_cols, names(desc))
+  if (!length(id_cols)) id_cols <- "gene_id"
+
+  rows <- lapply(id_cols, function(col) {
+    values <- as.character(desc[[col]])
+    values[is.na(values)] <- ""
+    pieces <- strsplit(values, "[;,|[:space:]]+")
+    keys <- unlist(pieces, use.names = FALSE)
+    idx <- rep(seq_len(nrow(desc)), lengths(pieces))
+    keys <- trimws(keys)
+    keep <- !is.na(keys) & nzchar(keys) & keys != "-"
+    if (!any(keep)) return(NULL)
+    data.frame(
+      lookup_key = gene_join_key(keys[keep]),
+      annotation_key = desc$annotation_key[idx[keep]],
+      annotation_gene_id = desc$gene_id[idx[keep]],
+      annotation_id_source_col = col,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  out <- do.call(rbind, rows)
+  if (is.null(out) || nrow(out) == 0) {
+    return(data.frame(
+      lookup_key = character(),
+      annotation_key = character(),
+      annotation_gene_id = character(),
+      annotation_id_source_col = character()
+    ))
+  }
+  out <- out[!is.na(out$lookup_key) & out$lookup_key != "", , drop = FALSE]
+  out <- out[!duplicated(out$lookup_key), , drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
 load_description_file <- function(
     path = DEFAULT_ARABIDOPSIS_DESCRIPTION_URL
 ) {
@@ -175,13 +253,42 @@ load_description_file <- function(
 
 # Left-join DE table with description file.
 # Adds annotation columns (GO terms, Symbol, KEGG, etc.) that are NOT already present.
-merge_with_description <- function(de_df, desc = NULL) {
+merge_with_description <- function(de_df, desc = NULL, replace_gene_id = FALSE) {
   if (is.null(desc)) desc <- load_description_file()
   if (is.null(desc)) return(de_df)
   desc <- normalize_annotation_table(desc)
-  de_df$annotation_key <- gene_join_key(de_df$gene_id)
+  de_df$.original_gene_id_for_annotation <- as.character(de_df$gene_id)
+  de_df$annotation_key <- gene_join_key(de_df$.original_gene_id_for_annotation)
+  if (isTRUE(replace_gene_id)) {
+    de_df$.annotation_lookup_row <- seq_len(nrow(de_df))
+    lookup <- make_annotation_lookup(desc)
+    de_df <- merge(
+      de_df,
+      lookup[, c("lookup_key", "annotation_key", "annotation_gene_id", "annotation_id_source_col"), drop = FALSE],
+      by.x = "annotation_key",
+      by.y = "lookup_key",
+      all.x = TRUE,
+      sort = FALSE,
+      suffixes = c("", ".matched")
+    )
+    de_df <- de_df[order(de_df$.annotation_lookup_row), , drop = FALSE]
+    de_df$.annotation_lookup_row <- NULL
+    de_df$annotation_key <- ifelse(
+      !is.na(de_df$annotation_key.matched) & de_df$annotation_key.matched != "",
+      de_df$annotation_key.matched,
+      de_df$annotation_key
+    )
+    de_df$annotation_key.matched <- NULL
+  }
   new_cols <- setdiff(names(desc), c(names(de_df), "gene_id", "annotation_key"))
   if (length(new_cols) == 0) {
+    if (isTRUE(replace_gene_id) && "annotation_gene_id" %in% names(de_df)) {
+      if (!"original_gene_id" %in% names(de_df)) de_df$original_gene_id <- de_df$.original_gene_id_for_annotation
+      replace_hit <- !is.na(de_df$annotation_gene_id) & de_df$annotation_gene_id != ""
+      de_df$gene_id[replace_hit] <- de_df$annotation_gene_id[replace_hit]
+      de_df$annotation_gene_id <- NULL
+    }
+    de_df$.original_gene_id_for_annotation <- NULL
     de_df$annotation_key <- NULL
     return(de_df)
   }
@@ -189,8 +296,16 @@ merge_with_description <- function(de_df, desc = NULL) {
   de_df$annotation_row <- seq_len(nrow(de_df))
   merged <- merge(de_df, desc_sub, by = "annotation_key", all.x = TRUE, sort = FALSE)
   merged <- merged[order(merged$annotation_row), , drop = FALSE]
+  if (isTRUE(replace_gene_id) && "annotation_gene_id" %in% names(merged)) {
+    if (!"original_gene_id" %in% names(merged)) merged$original_gene_id <- merged$.original_gene_id_for_annotation
+    replace_hit <- !is.na(merged$annotation_gene_id) & merged$annotation_gene_id != ""
+    merged$gene_id[replace_hit] <- merged$annotation_gene_id[replace_hit]
+    merged$annotation_gene_id <- NULL
+    merged$annotation_id_source_col <- NULL
+  }
   merged$annotation_key <- NULL
   merged$annotation_row <- NULL
+  merged$.original_gene_id_for_annotation <- NULL
   rownames(merged) <- NULL
   merged
 }
@@ -468,6 +583,55 @@ scan_rsem_files <- function(folder) {
   )
 }
 
+clean_featurecounts_sample_names <- function(x) {
+  x <- basename(as.character(x))
+  x <- sub("\\.sorted\\.bam$", "", x, ignore.case = TRUE)
+  x <- sub("\\.bam$", "", x, ignore.case = TRUE)
+  x
+}
+
+read_featurecounts_count_matrix <- function(path) {
+  fc <- utils::read.delim(path, comment.char = "#", check.names = FALSE)
+  if (nrow(fc) == 0) stop("featureCounts file has no rows.")
+  gene_col <- first_existing_col(fc, c("Geneid", "gene_id", "GeneID", "gene"))
+  if (is.null(gene_col)) gene_col <- names(fc)[1]
+  count_anchor <- first_existing_col(fc, c("gene_biotype", "Length"))
+  if (is.null(count_anchor)) {
+    stop("Could not find gene_biotype or Length column in the featureCounts file.")
+  }
+  count_start <- match(count_anchor, names(fc)) + 1
+  if (is.na(count_start) || count_start > ncol(fc)) {
+    stop("No sample count columns were found after ", count_anchor, ".")
+  }
+  count_mat <- fc[, count_start:ncol(fc), drop = FALSE]
+  colnames(count_mat) <- clean_featurecounts_sample_names(colnames(count_mat))
+  count_mat <- as.matrix(count_mat)
+  suppressWarnings(storage.mode(count_mat) <- "numeric")
+  if (anyNA(count_mat)) stop("featureCounts sample columns contain non-numeric values.")
+  count_mat <- round(count_mat)
+  storage.mode(count_mat) <- "integer"
+  rownames(count_mat) <- clean_gene_id(fc[[gene_col]])
+  keep <- !is.na(rownames(count_mat)) & nzchar(rownames(count_mat))
+  count_mat <- count_mat[keep, , drop = FALSE]
+  if (nrow(count_mat) == 0 || ncol(count_mat) == 0) stop("No usable count matrix could be extracted from featureCounts.")
+  if (anyDuplicated(rownames(count_mat))) {
+    count_mat <- rowsum(count_mat, group = rownames(count_mat), reorder = FALSE)
+    storage.mode(count_mat) <- "integer"
+  }
+  count_mat
+}
+
+scan_featurecounts_file <- function(path) {
+  if (is.null(path) || !file.exists(path)) return(data.frame())
+  count_mat <- read_featurecounts_count_matrix(path)
+  data.frame(
+    sample_id = colnames(count_mat),
+    condition = "condition_1",
+    sample_label = colnames(count_mat),
+    stringsAsFactors = FALSE
+  )
+}
+
 run_deseq2_from_rsem <- function(folder, coldata, treatment, control, lfc_shrink = FALSE, min_count = 10,
                                  effect_col = NULL, effect_level = NULL, use_interaction = FALSE,
                                  all_vs_control = TRUE) {
@@ -618,6 +782,161 @@ run_deseq2_from_rsem <- function(folder, coldata, treatment, control, lfc_shrink
     pca_table = pca_data,
     all_comparisons = all_comparisons,
     summary = paste(c(
+      paste0("Design formula: ", design_label),
+      paste0("Contrast: ", contrast_label),
+      if (isTRUE(all_vs_control)) paste0("All comparisons vs control: ", paste(setdiff(levels(coldata$condition), control), collapse = ", "), " vs ", control) else NULL,
+      capture.output(summary(res))
+    ), collapse = "\n"),
+    design_formula = design_label,
+    contrast = contrast_label,
+    coldata = coldata
+  )
+}
+
+run_deseq2_from_featurecounts <- function(counts_file, coldata, treatment, control, lfc_shrink = FALSE, min_count = 10,
+                                          effect_col = NULL, effect_level = NULL, use_interaction = FALSE,
+                                          all_vs_control = TRUE) {
+  required <- c("DESeq2", "tibble")
+  missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
+  if (length(missing)) stop("Missing required packages: ", paste(missing, collapse = ", "))
+
+  count_mat <- read_featurecounts_count_matrix(counts_file)
+  coldata <- normalize_coldata(coldata, sample_col = "sample_id", condition_col = "condition", label_col = "sample_label")
+  coldata$sample_id <- clean_featurecounts_sample_names(coldata$sample_id)
+  rownames(coldata) <- coldata$sample_id
+  missing_samples <- setdiff(coldata$sample_id, colnames(count_mat))
+  if (length(missing_samples) > 0) {
+    stop("These colData sample_id values do not match featureCounts columns: ", paste(missing_samples, collapse = ", "))
+  }
+  count_mat <- count_mat[, coldata$sample_id, drop = FALSE]
+
+  if (!treatment %in% coldata$condition) stop("Treatment is not present in colData condition column.")
+  if (!control %in% coldata$condition) stop("Control is not present in colData condition column.")
+
+  coldata$condition <- factor(coldata$condition)
+  coldata$condition <- stats::relevel(coldata$condition, ref = control)
+  design_formula <- ~ condition
+  results_contrast <- c("condition", treatment, control)
+  contrast_label <- paste0("condition: ", treatment, " vs ", control)
+  design_label <- "~ condition"
+
+  if (!is.null(effect_col) && nzchar(effect_col) && identical(effect_col, "condition")) {
+    if (isTRUE(use_interaction)) {
+      stop("Interaction requires a separate effect column in colData, not the condition column itself.")
+    }
+    design_label <- "~ condition"
+    contrast_label <- paste0("condition: ", treatment, " vs ", control, " in a multi-level condition column")
+  } else if (!is.null(effect_col) && nzchar(effect_col)) {
+    if (!effect_col %in% names(coldata)) stop("Selected effect column is not present in colData.")
+    effect_values <- trimws(as.character(coldata[[effect_col]]))
+    effect_values[!nzchar(effect_values)] <- NA_character_
+    coldata$de_effect <- factor(effect_values)
+    coldata <- coldata[!is.na(coldata$de_effect), , drop = FALSE]
+    if (nrow(coldata) == 0) stop("No samples remain after removing missing values from the selected effect column.")
+    if (!treatment %in% coldata$condition) stop("Treatment is not present after removing missing values from the selected effect column.")
+    if (!control %in% coldata$condition) stop("Control is not present after removing missing values from the selected effect column.")
+    count_mat <- count_mat[, coldata$sample_id, drop = FALSE]
+    if (is.null(effect_level) || !nzchar(effect_level)) {
+      effect_level <- levels(coldata$de_effect)[1]
+    }
+    if (!effect_level %in% levels(coldata$de_effect)) stop("Selected effect level is not present in the effect column.")
+    coldata$de_effect <- stats::relevel(coldata$de_effect, ref = effect_level)
+
+    if (isTRUE(use_interaction)) {
+      has_treatment_at_effect <- any(coldata$condition == treatment & coldata$de_effect == effect_level)
+      has_control_at_effect <- any(coldata$condition == control & coldata$de_effect == effect_level)
+      if (!has_treatment_at_effect || !has_control_at_effect) {
+        stop("For the interaction test, both treatment and control must have samples at effect level '", effect_level, "'.")
+      }
+      design_formula <- ~ condition + de_effect + condition:de_effect
+      design_label <- paste0("~ condition + ", effect_col, " + condition:", effect_col)
+      contrast_label <- paste0("condition: ", treatment, " vs ", control, " at ", effect_col, " = ", effect_level, " (", effect_col, " re-leveled as reference)")
+    } else {
+      design_formula <- ~ condition + de_effect
+      design_label <- paste0("~ condition + ", effect_col)
+      contrast_label <- paste0("condition: ", treatment, " vs ", control, " adjusted for ", effect_col, " (reference: ", effect_level, ")")
+    }
+  }
+
+  coldata$condition <- droplevels(coldata$condition)
+  if ("de_effect" %in% names(coldata)) coldata$de_effect <- droplevels(coldata$de_effect)
+
+  dds <- DESeq2::DESeqDataSetFromMatrix(countData = count_mat, colData = coldata, design = design_formula)
+  keep <- rowSums(DESeq2::counts(dds)) >= min_count
+  dds <- dds[keep, ]
+  dds <- DESeq2::DESeq(dds)
+
+  result_table_for_contrast <- function(contrast_vec) {
+    res <- DESeq2::results(dds, contrast = contrast_vec, alpha = 0.05)
+    if (isTRUE(lfc_shrink)) {
+      if (requireNamespace("ashr", quietly = TRUE)) {
+        res <- DESeq2::lfcShrink(dds, contrast = contrast_vec, res = res, type = "ashr")
+      } else {
+        warning("Package 'ashr' is not installed, so lfcShrink was skipped.")
+      }
+    }
+    res_df <- as.data.frame(res)
+    res_df$gene_id <- rownames(res_df)
+    res_df <- tibble::as_tibble(res_df)
+    if ("pvalue" %in% names(res_df)) names(res_df)[names(res_df) == "pvalue"] <- "pValue"
+    res_df <- res_df[, c("gene_id", setdiff(names(res_df), "gene_id"))]
+    res_df <- standardize_de_table(res_df, merge_default_description = FALSE)
+    res_df[order(res_df$padj), , drop = FALSE]
+  }
+
+  res <- DESeq2::results(dds, contrast = results_contrast, alpha = 0.05)
+  if (isTRUE(lfc_shrink)) {
+    if (requireNamespace("ashr", quietly = TRUE)) {
+      res <- DESeq2::lfcShrink(dds, contrast = results_contrast, res = res, type = "ashr")
+    } else {
+      warning("Package 'ashr' is not installed, so lfcShrink was skipped.")
+    }
+  }
+  res_df <- as.data.frame(res)
+  res_df$gene_id <- rownames(res_df)
+  res_df <- tibble::as_tibble(res_df)
+  if ("pvalue" %in% names(res_df)) names(res_df)[names(res_df) == "pvalue"] <- "pValue"
+  res_df <- res_df[, c("gene_id", setdiff(names(res_df), "gene_id"))]
+  res_df <- standardize_de_table(res_df, merge_default_description = FALSE)
+  res_df <- res_df[order(res_df$padj), , drop = FALSE]
+
+  all_comparisons <- NULL
+  if (isTRUE(all_vs_control)) {
+    comparison_levels <- setdiff(levels(coldata$condition), control)
+    comparison_tables <- lapply(comparison_levels, function(level) {
+      result_table_for_contrast(c("condition", level, control))
+    })
+    names(comparison_tables) <- paste0(comparison_levels, "_vs_", control)
+    all_comparisons <- list(
+      control = control,
+      comparisons = comparison_levels,
+      tables = comparison_tables
+    )
+  }
+
+  norm_counts <- as.data.frame(DESeq2::counts(dds, normalized = TRUE))
+  norm_counts$gene_id <- clean_gene_id(rownames(norm_counts))
+  norm_counts <- norm_counts[, c("gene_id", setdiff(names(norm_counts), "gene_id"))]
+
+  vst_obj <- if (nrow(dds) < 1000) {
+    DESeq2::varianceStabilizingTransformation(dds, blind = FALSE)
+  } else {
+    DESeq2::vst(dds, blind = FALSE)
+  }
+  pca_data <- DESeq2::plotPCA(vst_obj, intgroup = "condition", returnData = TRUE)
+  percentVar <- round(100 * attr(pca_data, "percentVar"), 1)
+  pca_data$name <- rownames(pca_data)
+  pca_data$sample_label <- coldata$sample_label[match(pca_data$name, coldata$sample_id)]
+  pca_data$percentVar1 <- percentVar[1]
+  pca_data$percentVar2 <- percentVar[2]
+
+  list(
+    de_table = res_df,
+    norm_counts = norm_counts,
+    pca_table = pca_data,
+    all_comparisons = all_comparisons,
+    summary = paste(c(
+      paste0("Input: featureCounts"),
       paste0("Design formula: ", design_label),
       paste0("Contrast: ", contrast_label),
       if (isTRUE(all_vs_control)) paste0("All comparisons vs control: ", paste(setdiff(levels(coldata$condition), control), collapse = ", "), " vs ", control) else NULL,
@@ -809,37 +1128,69 @@ add_go_bp_column <- function(df, orgdb = "org.At.tair.db", keytype = "TAIR") {
     return(df)
   }
   orgdb_obj <- get(orgdb, envir = asNamespace(orgdb))
-  genes <- unique(clean_gene_id(df$gene_id))
+  df$.go_lookup_key <- normalize_orgdb_gene_keys(df$gene_id, orgdb = orgdb, keytype = keytype)
+  genes <- unique(df$.go_lookup_key)
+  genes <- genes[!is.na(genes) & nzchar(genes)]
   annot <- AnnotationDbi::select(orgdb_obj, keys = genes, keytype = keytype, columns = c("GO", "ONTOLOGY"))
   annot <- annot[!is.na(annot$GO) & annot$ONTOLOGY == "BP", , drop = FALSE]
   collapsed <- stats::aggregate(stats::as.formula(paste("GO ~", keytype)), data = annot, FUN = function(x) paste(unique(x), collapse = "; "))
-  names(collapsed) <- c("gene_id", "GO_BP_terms")
-  df <- merge(df, collapsed, by = "gene_id", all.x = TRUE, sort = FALSE)
+  names(collapsed) <- c(".go_lookup_key", "GO_BP_terms")
+  df$.annotation_row <- seq_len(nrow(df))
+  df <- merge(df, collapsed, by = ".go_lookup_key", all.x = TRUE, sort = FALSE)
+  df <- df[order(df$.annotation_row), , drop = FALSE]
+  df$.annotation_row <- NULL
+  df$.go_lookup_key <- NULL
+  rownames(df) <- NULL
   df
 }
 
 run_topgo_enrichment <- function(de_df, direction = c("up", "down", "all"), ontology = "BP", alpha = 0.05, lfc_cutoff = 1,
                                  p_cutoff = 0.01, algorithm = "weight01", statistic = "fisher",
-                                 orgdb = "org.At.tair.db", topgo_id = "entrez") {
+                                 orgdb = "org.At.tair.db", topgo_id = "entrez", keytype = NULL) {
   direction <- match.arg(direction)
-  required <- c("topGO", "GO.db", orgdb)
+  required <- c("topGO", "GO.db", "AnnotationDbi", orgdb)
   missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) stop("Missing required packages: ", paste(missing, collapse = ", "))
   suppressPackageStartupMessages(library(topGO))
   suppressPackageStartupMessages(library(GO.db))
   de_df <- classify_de(de_df, alpha = alpha, lfc_cutoff = lfc_cutoff)
-  bg <- unique(clean_gene_id(de_df$gene_id))
+  keytype <- toupper(keytype %||% switch(tolower(topgo_id %||% "entrez"),
+    entrez = "ENTREZID",
+    symbol = "SYMBOL",
+    ensembl = "ENSEMBL",
+    refseq = "REFSEQ",
+    alias = "ALIAS",
+    genename = "GENENAME",
+    "ENTREZID"
+  ))
+  orgdb_obj <- getExportedValue(orgdb, orgdb)
+  available_keytypes <- AnnotationDbi::keytypes(orgdb_obj)
+  if (!keytype %in% available_keytypes) {
+    stop("Gene ID type '", keytype, "' is not available in ", orgdb,
+         ". Available key types: ", paste(available_keytypes, collapse = ", "))
+  }
+  available_columns <- AnnotationDbi::columns(orgdb_obj)
+  go_col <- if ("GOALL" %in% available_columns) "GOALL" else "GO"
+  ontology_col <- if ("ONTOLOGYALL" %in% available_columns) "ONTOLOGYALL" else "ONTOLOGY"
+  bg <- unique(normalize_orgdb_gene_keys(de_df$gene_id, orgdb = orgdb, keytype = keytype))
   if (direction == "up") interesting <- unique(de_df$gene_id[de_df$DE_class == "up"])
   if (direction == "down") interesting <- unique(de_df$gene_id[de_df$DE_class == "down"])
   if (direction == "all") interesting <- unique(de_df$gene_id[de_df$DE_class %in% c("up", "down")])
-  interesting <- intersect(clean_gene_id(interesting), bg)
+  interesting <- intersect(normalize_orgdb_gene_keys(interesting, orgdb = orgdb, keytype = keytype), bg)
   if (length(interesting) < 2) stop("Too few significant genes for GO enrichment in this direction.")
+  annot <- AnnotationDbi::select(orgdb_obj, keys = bg, keytype = keytype, columns = c(go_col, ontology_col))
+  annot <- annot[!is.na(annot[[go_col]]) & annot[[ontology_col]] == ontology, , drop = FALSE]
+  if (nrow(annot) == 0) {
+    stop("No ", ontology, " GO annotations found for the loaded genes using ", orgdb, " key type ", keytype, ".")
+  }
+  annot <- annot[!duplicated(annot[, c(keytype, go_col)]), c(keytype, go_col), drop = FALSE]
+  gene2go <- split(as.character(annot[[go_col]]), as.character(annot[[keytype]]))
 
   geneList <- factor(as.integer(bg %in% interesting))
   names(geneList) <- bg
   GOdata <- methods::new("topGOdata", ontology = ontology, allGenes = geneList,
                          geneSelectionFun = function(x) x == 1,
-                         annot = get("annFUN.org", envir = asNamespace("topGO")), mapping = orgdb, ID = topgo_id)
+                         annot = get("annFUN.gene2GO", envir = asNamespace("topGO")), gene2GO = gene2go)
   result <- topGO::runTest(GOdata, algorithm = algorithm, statistic = statistic)
   all_res <- topGO::GenTable(GOdata, pValue = result, topNodes = length(result@score))
   all_res$pValue_num <- as_numeric_p(all_res$pValue)
@@ -851,6 +1202,60 @@ run_topgo_enrichment <- function(de_df, direction = c("up", "down", "all"), onto
   all_res <- all_res[order(all_res$pValue_num), , drop = FALSE]
   sig <- all_res[!is.na(all_res$pValue_num) & all_res$pValue_num <= p_cutoff, , drop = FALSE]
   sig
+}
+
+parse_go_ids <- function(go_ids) {
+  go_ids <- trimws(unlist(strsplit(as.character(go_ids %||% ""), ",|;|\\s+")))
+  go_ids <- toupper(unique(go_ids[!is.na(go_ids) & nzchar(go_ids)]))
+  go_ids <- go_ids[grepl("^GO:[0-9]{7}$", go_ids)]
+  if (length(go_ids) == 0) stop("Enter at least one GO ID, for example GO:0008150.")
+  go_ids
+}
+
+make_go_gene_table <- function(de_df, go_ids, ontology = "BP", orgdb = "org.At.tair.db",
+                               keytype = "TAIR", alpha = 0.05, lfc_cutoff = 1) {
+  go_ids <- parse_go_ids(go_ids)
+  required <- c("AnnotationDbi", "GO.db", orgdb)
+  missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
+  if (length(missing)) stop("Missing required packages: ", paste(missing, collapse = ", "))
+
+  de_df <- classify_de(de_df, alpha = alpha, lfc_cutoff = lfc_cutoff)
+  keytype <- toupper(keytype %||% "TAIR")
+  orgdb_obj <- getExportedValue(orgdb, orgdb)
+  available_keytypes <- AnnotationDbi::keytypes(orgdb_obj)
+  if (!keytype %in% available_keytypes) {
+    stop("Gene ID type '", keytype, "' is not available in ", orgdb,
+         ". Available key types: ", paste(available_keytypes, collapse = ", "))
+  }
+
+  available_columns <- AnnotationDbi::columns(orgdb_obj)
+  go_col <- if ("GOALL" %in% available_columns) "GOALL" else "GO"
+  ontology_col <- if ("ONTOLOGYALL" %in% available_columns) "ONTOLOGYALL" else "ONTOLOGY"
+  de_df$.go_lookup_key <- normalize_orgdb_gene_keys(de_df$gene_id, orgdb = orgdb, keytype = keytype)
+  lookup_keys <- unique(de_df$.go_lookup_key)
+  lookup_keys <- lookup_keys[!is.na(lookup_keys) & nzchar(lookup_keys)]
+  if (length(lookup_keys) == 0) stop("No usable gene IDs were found for GO matching.")
+
+  annot <- AnnotationDbi::select(orgdb_obj, keys = lookup_keys, keytype = keytype, columns = c(go_col, ontology_col))
+  annot <- annot[!is.na(annot[[go_col]]) & annot[[go_col]] %in% go_ids & annot[[ontology_col]] == ontology, , drop = FALSE]
+  if (nrow(annot) == 0) return(data.frame())
+  annot <- annot[!duplicated(annot[, c(keytype, go_col)]), c(keytype, go_col), drop = FALSE]
+  names(annot) <- c(".go_lookup_key", "GO_ID")
+
+  term_map <- tryCatch({
+    terms <- AnnotationDbi::select(GO.db::GO.db, keys = unique(annot$GO_ID), keytype = "GOID", columns = "TERM")
+    terms <- terms[!is.na(terms$GOID), , drop = FALSE]
+    stats::setNames(as.character(terms$TERM), as.character(terms$GOID))
+  }, error = function(e) character())
+
+  out <- merge(de_df, annot, by = ".go_lookup_key", all.x = FALSE, sort = FALSE)
+  out$GO_term <- unname(term_map[as.character(out$GO_ID)])
+  out$GO_term[is.na(out$GO_term) | !nzchar(out$GO_term)] <- out$GO_ID[is.na(out$GO_term) | !nzchar(out$GO_term)]
+  out$.go_lookup_key <- NULL
+  out <- out[order(out$GO_ID, out$padj, out$pValue, na.last = TRUE), , drop = FALSE]
+  out <- out[!duplicated(out[, intersect(c("gene_id", "GO_ID"), names(out)), drop = FALSE]), , drop = FALSE]
+  rownames(out) <- NULL
+  out
 }
 
 make_go_bubble_plot <- function(go_df, title = "GO enrichment", top_n = 20, direction = NULL, point_alpha = 0.82,
@@ -964,6 +1369,47 @@ run_msigdb_hallmark_enrichment <- function(de_df, direction = c("up", "down", "a
   if (is.null(out) || nrow(out) == 0) stop("No Hallmark gene sets overlap the loaded DE table after size filtering.")
   out$pAdjusted <- stats::p.adjust(out$pValue, method = p_adjust_method)
   out <- out[order(out$pAdjusted, out$pValue), , drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
+parse_hallmark_ids <- function(hallmark_ids) {
+  hallmark_ids <- trimws(unlist(strsplit(as.character(hallmark_ids %||% ""), ",|;")))
+  hallmark_ids <- toupper(unique(hallmark_ids[!is.na(hallmark_ids) & nzchar(hallmark_ids)]))
+  hallmark_ids <- gsub("[^A-Z0-9]+", "_", hallmark_ids)
+  hallmark_ids <- gsub("^_+|_+$", "", hallmark_ids)
+  hallmark_ids <- ifelse(grepl("^HALLMARK_", hallmark_ids), hallmark_ids, paste0("HALLMARK_", hallmark_ids))
+  if (length(hallmark_ids) == 0) stop("Enter at least one Hallmark code.")
+  hallmark_ids
+}
+
+make_msigdb_hallmark_gene_table <- function(de_df, hallmark_ids, species = "Homo sapiens",
+                                            keytype = "SYMBOL", alpha = 0.05, lfc_cutoff = 1) {
+  hallmark_ids <- parse_hallmark_ids(hallmark_ids)
+  de_df <- classify_de(de_df, alpha = alpha, lfc_cutoff = lfc_cutoff)
+  de_df$.hallmark_lookup_key <- normalize_msigdb_gene_ids(de_df$gene_id, keytype)
+  de_df <- de_df[!is.na(de_df$.hallmark_lookup_key) & nzchar(de_df$.hallmark_lookup_key), , drop = FALSE]
+  if (nrow(de_df) == 0) stop("No usable gene IDs were found for Hallmark matching.")
+
+  sets <- load_msigdb_hallmark_sets(species = species, keytype = keytype)
+  known_codes <- names(sets)
+  rows <- lapply(hallmark_ids, function(code) {
+    hit <- known_codes[toupper(known_codes) == toupper(code)]
+    if (length(hit) == 0) return(NULL)
+    hallmark_id <- hit[1]
+    set_genes <- unique(sets[[hallmark_id]])
+    sub <- de_df[de_df$.hallmark_lookup_key %in% set_genes, , drop = FALSE]
+    if (nrow(sub) == 0) return(NULL)
+    sub$Hallmark <- hallmark_id
+    sub$Hallmark_term <- gsub("_", " ", sub("^HALLMARK_", "", hallmark_id))
+    sub$Hallmark_set_size <- length(set_genes)
+    sub
+  })
+  out <- do.call(rbind, rows[!vapply(rows, is.null, logical(1))])
+  if (is.null(out) || nrow(out) == 0) return(data.frame())
+  out$.hallmark_lookup_key <- NULL
+  out <- out[order(out$Hallmark, out$padj, out$pValue, na.last = TRUE), , drop = FALSE]
+  out <- out[!duplicated(out[, intersect(c("gene_id", "Hallmark"), names(out)), drop = FALSE]), , drop = FALSE]
   rownames(out) <- NULL
   out
 }
