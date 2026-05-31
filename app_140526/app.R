@@ -1300,9 +1300,9 @@ server <- function(input, output, session) {
     msg <- sub("^step:\\s*", "", msg, ignore.case = TRUE)
 
     if (level == "ERROR") {
-      rv$log <- c(rv$log, paste(timestamp, paste0("[", toupper(level), "]"), msg))   
+      rv$log <- c(isolate(rv$log), paste(timestamp, paste0("[", toupper(level), "]"), msg))   
     } else {
-      rv$log <- c(rv$log, paste(timestamp, msg))
+      rv$log <- c(isolate(rv$log), paste(timestamp, msg))
     }
     
     # Show a UI notification for successful actions so the user sees what happened
