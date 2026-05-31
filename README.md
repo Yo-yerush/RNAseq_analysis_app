@@ -8,22 +8,6 @@ Plant's metabolism and molecular genetic lab, Prof. Rachel Amir group
 **Repository:**  
 [https://github.com/Yo-yerush/RNAseq_analysis_app.git](https://github.com/Yo-yerush/RNAseq_analysis_app.git)
 
-## File Structure
-
-- `app_140526/` - main app folder:
-  - `app.R` - Shiny dashboard UI/server.
-  - `R/helpers.R` - DESeq2 pipeline, DE result plots, GO/MSigDB helpers, annotation utilities.
-  - `R/build_uniprot_description_file.R` - UniProt annotation builder, including Ensembl/SYMBOL/ENTREZID/TAIR ID support through OrgDb where available.
-  - `R/build_refseq_gftf_description_file.R` - RefSeq GTF annotation builder for NCBI-downloaded GTF files, including selectable `db_xref`/attribute ID sources.
-  - `legacy_scripts/kegg_analysis.R` - KEGG enrichment and KEGG ID mapping helpers.
-  - `legacy_scripts/volcano_TEG_overlap_with_TE_families_RNAseq.R` - Arabidopsis TE superfamily enrichment and volcano helpers.
-  - `install_packages.R` - installs required CRAN and Bioconductor packages.
-  - `launch_app.R` - launches the Shiny app from R.
-  - `example_data/` - bundled example DE table.
-  - `description_files/` - optional local data files. Default Arabidopsis, human, E. coli K-12 MG1655 annotation tables and TAIR10 TE metadata are loaded from GitHub when internet is available.
-- `install.bat` - Windows first-run launcher that installs missing packages.
-- `RA_RNAseq_analysis_app.bat` - faster launcher for later runs.
-
 ## How To Run On Windows
 
 1. Install R for Windows, preferably R 4.2 or newer.
@@ -41,17 +25,15 @@ C:\Program Files\R\R-4.x.x\bin
 
 ### Upload DE Results
 
-Upload CSV, TSV, or TXT differential expression results. The app auto-detects comma and tab delimiters.
+Upload CSV, TSV, TXT, XLS, or XLSX differential expression results. The app auto-detects comma and tab delimiters for text files.
 
-Recommended columns:
+Must include columns:
 
 | Column | Description |
 |--------|-------------|
 | `gene_id` | Gene identifier, for example TAIR, Ensembl, Entrez, or symbol |
 | `log2FoldChange` | log2 fold change |
 | `padj` | adjusted p-value |
-| `pValue` | raw p-value, optional |
-| `baseMean` | mean normalized count, needed for MA plots |
 
 If standard column names are not found, the app treats the first three columns as `gene_id`, `log2FoldChange`, and `padj`.
 
@@ -61,15 +43,16 @@ After loading the table, the app auto-detects common `gene_id` formats such as T
 
 Point the app to a folder containing `*.genes.results` files, or upload a featureCounts output table. The app scans sample IDs and creates editable colData.
 
-colData supports CSV, TSV, and TXT with comma or tab delimiters.
+colData supports CSV, TSV, TXT, XLS, and XLSX files. Text files can use comma or tab delimiters.
 
 Supported column patterns:
 
-| New style | Legacy style |
-|----------|--------------|
-| `sample_id` | `x` / `file` / `sample` |
-| `condition` | `exp` / `group` / `genotype` / `treatment` |
-| `sample_label` optional | `sample` / `label` optional |
+| Column name | Column positions options | Is unique? |
+|----------|--------------|--------------|
+| `sample_id` | `1st` / `2nd` | Yes |
+| `condition` | `1st` / `2nd` / `3rd` | No |
+| `sample_label` optional | `2nd` / `3rd` / `4th` | Yes |
+| `effect` optional | `≥ 3rd` | NO |
 
 Extra colData columns are preserved. You can choose one extra effect column for DESeq2:
 
@@ -204,6 +187,7 @@ The upregulated/downregulated/not-significant colors are used across DE result p
 
 - The bundled TE workflow is Arabidopsis-specific.
 - GO requires the selected OrgDb package to be installed, for example `org.At.tair.db` or `org.Hs.eg.db`.
+  - Some analysis tabs require extra Bioconductor packages when used, especially `GO.db`, `KEGGREST`, `pathview`, and the selected `org.*.db` organism package. The app can install supported OrgDb packages from the Organism annotations tab.
 - E. coli K-12 GO analysis supports `b####` locus tags through the app's alias normalization and supports RefSeq accessions through OrgDb `REFSEQ`/`ACCNUM` where available.
 - KEGG and Pathview require internet access when KEGG data or pathway images are not cached.
 - UniProt annotation building requires internet access.
@@ -224,3 +208,20 @@ If it still cannot find R, run `app_140526/diagnose_R_installation.bat`, then ed
 ```bat
 set "RSCRIPT=C:\Program Files\R\R-4.5.0\bin\Rscript.exe"
 ```
+
+## File Structure
+
+- `app_140526/` - main app folder:
+  - `app.R` - Shiny dashboard UI/server.
+  - `R/helpers.R` - DESeq2 pipeline, DE result plots, GO/MSigDB helpers, annotation utilities.
+  - `R/build_uniprot_description_file.R` - UniProt annotation builder, including Ensembl/SYMBOL/ENTREZID/TAIR ID support through OrgDb where available.
+  - `R/build_refseq_gftf_description_file.R` - RefSeq GTF annotation builder for NCBI-downloaded GTF files, including selectable `db_xref`/attribute ID sources.
+  - `legacy_scripts/kegg_analysis.R` - KEGG enrichment and KEGG ID mapping helpers.
+  - `legacy_scripts/volcano_TEG_overlap_with_TE_families_RNAseq.R` - Arabidopsis TE superfamily enrichment and volcano helpers.
+  - `install_packages.R` - installs the core CRAN and Bioconductor packages used by the app.
+  - `launch_app.R` - launches the Shiny app from R.
+  - `diagnose_R_installation.bat` - checks common Windows R installation paths if the launchers cannot find `Rscript.exe`.
+  - `description_files/` - optional local data files. Default Arabidopsis, human, E. coli K-12 MG1655 annotation tables and TAIR10 TE metadata are loaded from GitHub when internet is available.
+  - Optional local data files can be added by the user. Default Arabidopsis, human, E. coli K-12 MG1655 annotation tables and TAIR10 TE metadata are loaded from GitHub when internet is available.
+- `install.bat` - Windows first-run launcher that installs missing packages.
+- `RA_RNAseq_analysis_app.bat` - faster launcher for later runs.
