@@ -376,7 +376,10 @@ pmn_database_choices <- c("Not available for selected organism" = "", pmn_catalo
 
 ui <- fluidPage(
   theme = shinythemes::shinytheme("united"),
-  tags$head(tags$style(HTML("\n    .app-title { margin-top: 10px; margin-bottom: 4px; font-weight: 700; }\n    .muted { color: #666; font-size: 0.92em; }\n    .tab-content { padding: 16px; border: 1px solid #ddd; border-top: none; }\n    .download-row .btn { margin-right: 8px; margin-top: 6px; }\n    .annotation-input-row { display: flex; align-items: stretch; }\n    .annotation-input-row > [class*='col-'] { display: flex; }\n    .annotation-input-row .well { flex: 1; width: 100%; }\n    pre { white-space: pre-wrap; }\n    table.dataTable tbody td { padding-top: 1.5px; padding-bottom: 1.5px; line-height: 1.25; }\n    .row-detail-modal { max-height: 70vh; overflow-y: auto; }\n    .row-detail-table th { width: 190px; vertical-align: top; white-space: nowrap; }\n    .row-detail-table td { white-space: pre-wrap; word-break: break-word; }\n  "))),
+  tags$head(
+    tags$style(HTML("\n    .app-title { margin-top: 10px; margin-bottom: 4px; font-weight: 700; }\n    .muted { color: #666; font-size: 0.92em; }\n    .tab-content { padding: 16px; border: 1px solid #ddd; border-top: none; }\n    .download-row .btn { margin-right: 8px; margin-top: 6px; }\n    .annotation-input-row { display: flex; align-items: stretch; }\n    .annotation-input-row > [class*='col-'] { display: flex; }\n    .annotation-input-row .well { flex: 1; width: 100%; }\n    pre { white-space: pre-wrap; }\n    table.dataTable tbody td { padding-top: 1.5px; padding-bottom: 1.5px; line-height: 1.25; }\n    #settings_toggle_btn { margin: 4px 0 10px 0; }\n    body.settings-hidden #settings_sidebar { display: none; }\n    body.settings-hidden #main_content { width: 100%; }\n    .row-detail-modal { max-height: 70vh; overflow-y: auto; }\n    .row-detail-table th { width: 190px; vertical-align: top; white-space: nowrap; }\n    .row-detail-table td { white-space: pre-wrap; word-break: break-word; }\n  ")),
+    tags$script(HTML("\n      $(document).on('click', '#settings_toggle_btn', function() {\n        var hidden = !$('body').hasClass('settings-hidden');\n        $('body').toggleClass('settings-hidden', hidden);\n        $(this).text(hidden ? '☰ ►' : '◄ ☰');\n      });\n    "))
+  ),
 
   # Add the theme selector if shinythemes is installed (for easy testing of themes)
   # if (requireNamespace("shinythemes", quietly = TRUE)) shinythemes::themeSelector(),
@@ -384,9 +387,18 @@ ui <- fluidPage(
   titlePanel(div(class = "app-title", "RNA-seq Analysis Dashboard")),
   div(class = "muted", "Load DE results directly, or run DESeq2 from `RSEM .genes.results` files or `featureCounts` output."),
   br(),
+  div(
+    style = "text-align: left;",
+    tags$button(
+      id = "settings_toggle_btn",
+      type = "button",
+      class = "btn btn-warning btn-xs",
+      "◄ ☰"
+    )
+  ),
 
   sidebarLayout(
-    sidebarPanel(width = 3,
+    sidebarPanel(id = "settings_sidebar", width = 3,
       conditionalPanel("input.tabs == 'Data input'",
         h4("Data input"),
         radioButtons("data_mode", NULL,
@@ -539,7 +551,7 @@ ui <- fluidPage(
     ),
 
 
-    mainPanel(width = 9,
+    mainPanel(id = "main_content", width = 9,
       tabsetPanel(id = "tabs",
         tabPanel("Data input",
           conditionalPanel("input.data_mode == 'rsem'",
@@ -555,7 +567,7 @@ ui <- fluidPage(
           ),
             DTOutput("coldata_table"),
             div(class = "muted", "Edit the condition column, then select treatment/control in the sidebar and run DESeq2."),
-            div(class = "muted", "Use `+` button to add effect column."),
+            div(class = "muted", "Use ✚ button to add effect column."),
             tags$hr()
           ),
           uiOutput("data_summary_box"),
