@@ -124,6 +124,128 @@ row_detail_button_defs <- function(target) {
   list(list(targets = target, orderable = FALSE, searchable = FALSE, width = "110px", className = "dt-left"))
 }
 
+dependency_catalog <- data.frame(
+  Package = c(
+    "R", "shiny", "shinyFiles", "shinythemes", "bslib", "DT", "htmltools",
+    "ggplot2", "dplyr", "readr", "stringr", "tibble", "tidyr", "readxl",
+    "DESeq2", "tximport", "SummarizedExperiment", "ashr", "VennDiagram",
+    "topGO", "GO.db", "AnnotationDbi", "rrvgo", "ggrepel",
+    "KEGGREST", "pathview", "msigdbr", "biomaRt",
+    "RColorBrewer", "pheatmap", "stringi", "data.table",
+    "patchwork", "gridExtra", "futile.logger"
+  ),
+  Needed_for = c(
+    "Core R runtime. Nothing runs without R.",
+    "Main Shiny app server and UI.",
+    "Folder picker for RSEM input directories.",
+    "Current app theme. App can run without it only if the theme call is changed.",
+    "Optional Bootstrap/theme support.",
+    "Interactive tables throughout the app.",
+    "HTML escaping for table action buttons and modal text.",
+    "All plots: Volcano, MA, PCA, GO, KEGG, PMN, TE, gene groups.",
+    "Data wrangling across most analyses.",
+    "Reading CSV/TSV/TXT tables and remote annotation files.",
+    "String handling and ID cleanup.",
+    "Table/data-frame helpers.",
+    "Data reshaping in helper workflows.",
+    "Excel upload support for DE tables and colData.",
+    "Run DESeq2 from RSEM or featureCounts counts.",
+    "Import RSEM quantification files into DESeq2.",
+    "DESeq2 count containers and result objects.",
+    "Optional log2FC shrinkage when selected.",
+    "All-comparison Venn diagram in the Data input tab.",
+    "GO enrichment.",
+    "GO term names, offspring summaries, REVIGO-like and gene-group GO lookup.",
+    "GO/OrgDb ID mapping, UniProt bridging, KEGG ID mapping.",
+    "REVIGO-like semantic GO reduction.",
+    "REVIGO-like scatter labels and some labeled plots.",
+    "KEGG pathway enrichment and pathway gene-set downloads.",
+    "Pathview pathway map generation.",
+    "MSigDB/Hallmark enrichment.",
+    "Optional HGNC/human gene-family ID mapping fallback.",
+    "Color palettes for plots and REVIGO-like views.",
+    "Heatmap support for legacy/helper workflows.",
+    "Faster RefSeq GTF attribute parsing when available.",
+    "Faster RefSeq GTF table building when available.",
+    "Optional side-by-side plot composition in legacy helpers.",
+    "Fallback side-by-side plot composition in legacy helpers.",
+    "Optional VennDiagram message suppression."
+  ),
+  If_missing = c(
+    "Install R and make Rscript discoverable by the launcher.",
+    "The app cannot start.",
+    "RSEM folder browsing will not work.",
+    "The current UI theme may fail unless replaced with another theme.",
+    "Optional bslib features/themes are unavailable.",
+    "Tables will not render.",
+    "Details/plot buttons in tables may fail to render safely.",
+    "Most plots and plot downloads will fail.",
+    "Most analyses and table preparation will fail.",
+    "Some text-table and remote-file loading will fail or fall back where possible.",
+    "Several parsing and cleanup steps may fail.",
+    "Some helper outputs may fail.",
+    "Some reshaping workflows may fail.",
+    "XLS/XLSX uploads will fail.",
+    "DESeq2-from-counts workflow will not work.",
+    "RSEM import into DESeq2 will not work.",
+    "DESeq2 workflow may fail.",
+    "LFC shrinkage is skipped.",
+    "The all-comparison Venn plot will not work.",
+    "GO enrichment will not work.",
+    "GO names, offspring, REVIGO-like reduction, and gene groups that use GO offspring will fail.",
+    "OrgDb-dependent mapping and many organism-aware analyses will fail.",
+    "REVIGO-like semantic reduction will not work.",
+    "REVIGO-like labels or labeled plots may fail.",
+    "KEGG enrichment will not work.",
+    "Pathview map generation will not work.",
+    "Hallmark analysis will not work.",
+    "Some human gene-family mapping fallbacks will be unavailable.",
+    "Some palette choices may fail.",
+    "Legacy/helper heatmaps may fail.",
+    "RefSeq GTF parsing falls back to base R and may be slower.",
+    "RefSeq GTF table building falls back to base R and may be slower.",
+    "Some side-by-side legacy plots will not combine.",
+    "Fallback side-by-side legacy plots will not combine.",
+    "VennDiagram may print extra messages."
+  ),
+  stringsAsFactors = FALSE
+)
+
+dependency_status_table <- function(extra_packages = character()) {
+  catalog <- dependency_catalog
+  extra_packages <- unique(extra_packages[!is.na(extra_packages) & nzchar(extra_packages)])
+  extra_packages <- setdiff(extra_packages, catalog$Package)
+  if (length(extra_packages) > 0) {
+    catalog <- rbind(
+      catalog,
+      data.frame(
+        Package = extra_packages,
+        Needed_for = "Selected organism OrgDb package for GO and ID mapping.",
+        If_missing = "GO and ID mapping for the selected organism will not work until this package is installed.",
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+
+  installed <- vapply(catalog$Package, function(pkg) {
+    if (identical(pkg, "R")) TRUE else requireNamespace(pkg, quietly = TRUE)
+  }, logical(1))
+  version <- vapply(catalog$Package, function(pkg) {
+    if (identical(pkg, "R")) return(paste(R.version$major, R.version$minor, sep = "."))
+    if (!requireNamespace(pkg, quietly = TRUE)) return("")
+    as.character(utils::packageVersion(pkg))
+  }, character(1))
+
+  data.frame(
+    Package = catalog$Package,
+    Installed_properly = ifelse(installed, "Yes", "No"),
+    Version = version,
+    Needed_for = catalog$Needed_for,
+    If_missing = catalog$If_missing,
+    stringsAsFactors = FALSE
+  )
+}
+
 comparison_display_label <- function(x) {
   x <- gsub("_vs_", " vs ", x, fixed = TRUE)
   gsub("_", " ", x, fixed = TRUE)
@@ -1184,6 +1306,12 @@ ui <- fluidPage(
                 tags$li(strong("Testing after edits: "), "At minimum run ", code("Rscript -e \"parse('app_140526/app.R')\""), " and source any changed helper scripts. For mapping changes, test a small known ID example, such as human ", code("ENSG00000141510"), " mapping to Entrez ", code("7157"), " or UniProt ", code("P04637"), "."),
                 tags$li(strong("Do not break existing behavior: "), "Keep Arabidopsis TAIR workflows working while adding human/other organism support. Avoid changing input IDs unless all server references are updated.")
               )
+            ),
+            tabPanel("Dependencies",
+              br(),
+              h4("Installed Dependencies"),
+              div(class = "muted", "Package status is checked with requireNamespace(). The selected OrgDb package is included dynamically from the Organism annotations settings."),
+              DTOutput("dependency_table")
             )
           )
         )
@@ -3547,6 +3675,23 @@ server <- function(input, output, session) {
   })
 
   output$run_log <- renderText({ paste(rv$log, collapse = "\n") })
+
+  output$dependency_table <- renderDT({
+    selected_orgdb <- input$go_orgdb %||% rv$selected_orgdb %||% ""
+    d <- dependency_status_table(extra_packages = selected_orgdb)
+    tbl <- datatable(
+      d,
+      rownames = FALSE,
+      filter = "top",
+      options = list(pageLength = 100, scrollX = TRUE, autoWidth = FALSE)
+    )
+    DT::formatStyle(
+      tbl,
+      "Installed_properly",
+      color = DT::styleEqual(c("Yes", "No"), c("#1A7F37", "#B2182B")),
+      fontWeight = "bold"
+    )
+  })
 
   output$download_de <- downloadHandler(
     filename = function() paste0("DE_results_", Sys.Date(), ".csv"),
