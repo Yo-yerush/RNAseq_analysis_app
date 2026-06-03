@@ -95,7 +95,8 @@ make_retro_te_volcano <- function(de_df,
                                   point_size = 0.75,
                                   point_alpha = 0.4,
                                   plot_theme = "classic",
-                                  font_family = "serif") {
+                                  font_family = "serif",
+                                  color_palette = "default") {
   te_df <- build_te_overlap_table(de_df, description_file, te_file)
   if (!is.null(families) && length(families) > 0) {
     retro_df <- te_df %>% dplyr::filter(Transposon_Family %in% families)
@@ -125,7 +126,8 @@ make_retro_te_volcano <- function(de_df,
     point_size = point_size,
     point_alpha = point_alpha,
     plot_theme = plot_theme,
-    font_family = font_family
+    font_family = font_family,
+    color_palette = color_palette
   )
 
   list(data = retro_df, plot = p)
@@ -139,8 +141,9 @@ plot_retro_te_volcano_data <- function(retro_df,
                                        point_size = 0.75,
                                        point_alpha = 0.4,
                                        plot_theme = "classic",
-                                       font_family = "serif") {
-  ggplot(retro_df, aes_string(x = "log2FoldChange", y = "-log10(padj)", color = color_col)) +
+                                       font_family = "serif",
+                                       color_palette = "default") {
+  p <- ggplot(retro_df, aes_string(x = "log2FoldChange", y = "-log10(padj)", color = color_col)) +
     geom_point(alpha = point_alpha, size = point_size) +
     xlab("log2(Fold-Change)") +
     ylab("-log10(padj)") +
@@ -156,6 +159,17 @@ plot_retro_te_volcano_data <- function(retro_df,
                  col = "gray20", alpha = 0.6, size = 0.4, linetype = "dashed") +
     geom_segment(aes(x = -Inf, y = -log10(padj_cutoff), xend = -lfc_cutoff, yend = -log10(padj_cutoff)),
                  col = "gray20", alpha = 0.6, size = 0.4, linetype = "dashed")
+
+  color_values <- NULL
+  if (exists("pca_palette_values", mode = "function")) {
+    color_levels <- sort(unique(as.character(retro_df[[color_col]])))
+    color_values <- pca_palette_values(length(color_levels), color_palette)
+    if (!is.null(color_values)) names(color_values) <- color_levels
+  }
+  if (!is.null(color_values)) {
+    p <- p + scale_color_manual(values = color_values, na.value = "grey70")
+  }
+  p
 }
 
 run_te_enrichment <- function(de_df,

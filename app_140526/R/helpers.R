@@ -55,7 +55,7 @@ first_existing_col <- function(df, candidates) {
 
 count_fixed_matches <- function(x, pattern) {
   matches <- gregexpr(pattern, x, fixed = TRUE)[[1]]
-  if (identical(matches, -1L)) 0L else length(matches)
+  if (length(matches) == 1 && matches[1] == -1L) 0L else length(matches)
 }
 
 is_remote_path <- function(path) {
@@ -589,22 +589,66 @@ normalize_coldata <- function(coldata, sample_col = NULL, condition_col = NULL, 
   if (length(extra_cols) > 0) {
     out <- cbind(out, coldata[, extra_cols, drop = FALSE])
   }
-  out$sample_id <- sub("\\.genes\\.results$", "", out$sample_id)
+  out$sample_id <- sub("\\.(genes|transcripts)\\.results$", "", out$sample_id)
   out$sample_id <- basename(out$sample_id)
   out <- out[!is.na(out$sample_id) & out$sample_id != "", , drop = FALSE]
   out
 }
 
-scan_rsem_files <- function(folder) {
+scan_rsem_files <- function(folder, transcript_level = FALSE) {
   if (is.null(folder) || !dir.exists(folder)) return(data.frame())
-  files <- list.files(folder, pattern = "\\.genes\\.results$", full.names = TRUE)
+  suffix <- if (isTRUE(transcript_level)) "transcripts" else "genes"
+  pattern <- paste0("\\.", suffix, "\\.results$")
+  files <- list.files(folder, pattern = pattern, full.names = TRUE)
+  sample_ids <- sub("\\.(genes|transcripts)\\.results$", "", basename(files))
   data.frame(
-    sample_id = sub("\\.genes\\.results$", "", basename(files)),
+    sample_id = sample_ids,
     condition = "condition_1",
-    sample_label = sub("\\.genes\\.results$", "", basename(files)),
+    sample_label = sample_ids,
     file = files,
     stringsAsFactors = FALSE
   )
+}
+
+scan_tximport_quant_files <- function(folder, quant_type = c("rsem", "salmon", "kallisto"),
+                                      rsem_tx_ids = FALSE) {
+  quant_type <- match.arg(quant_type)
+  if (identical(quant_type, "rsem")) return(scan_rsem_files(folder, transcript_level = rsem_tx_ids))
+  if (is.null(folder) || !dir.exists(folder)) return(data.frame())
+
+  pattern <- switch(
+    quant_type,
+    salmon = "quant\\.sf$",
+    kallisto = "abundance\\.tsv$"
+  )
+  files <- list.files(folder, pattern = pattern, full.names = TRUE, recursive = TRUE)
+  if (!length(files)) return(data.frame())
+  sample_ids <- basename(dirname(files))
+  duplicated_ids <- duplicated(sample_ids) | duplicated(sample_ids, fromLast = TRUE)
+  sample_ids[duplicated_ids] <- tools::file_path_sans_ext(basename(files[duplicated_ids]))
+  data.frame(
+    sample_id = sample_ids,
+    condition = "condition_1",
+    sample_label = sample_ids,
+    file = files,
+    stringsAsFactors = FALSE
+  )
+}
+
+read_tx2gene_table <- function(path) {
+  if (is.null(path) || !file.exists(path)) stop("A tx2gene table is required for transcript-level quantification input.")
+  tx2gene <- read_any_table(path, source_name = path)
+  tx2gene <- as.data.frame(tx2gene, check.names = FALSE)
+  if (ncol(tx2gene) < 2) stop("tx2gene table must contain at least two columns: transcript ID and gene ID.")
+  tx2gene <- tx2gene[, 1:2, drop = FALSE]
+  names(tx2gene) <- c("TXNAME", "GENEID")
+  tx2gene$TXNAME <- trimws(as.character(tx2gene$TXNAME))
+  tx2gene$GENEID <- trimws(as.character(tx2gene$GENEID))
+  tx2gene <- tx2gene[!is.na(tx2gene$TXNAME) & nzchar(tx2gene$TXNAME) &
+                       !is.na(tx2gene$GENEID) & nzchar(tx2gene$GENEID), , drop = FALSE]
+  tx2gene <- tx2gene[!duplicated(tx2gene$TXNAME), , drop = FALSE]
+  if (nrow(tx2gene) == 0) stop("tx2gene table has no usable transcript-to-gene mappings.")
+  tx2gene
 }
 
 clean_featurecounts_sample_names <- function(x) {
@@ -645,6 +689,40 @@ read_featurecounts_count_matrix <- function(path) {
   count_mat
 }
 
+read_count_matrix_file <- function(path) {
+  tbl <- read_any_table(path, source_name = basename(path))
+  tbl <- as.data.frame(tbl, check.names = FALSE)
+  if (ncol(tbl) < 2) stop("Count matrix must contain a gene ID column and at least one sample count column.")
+
+  gene_ids <- clean_gene_id(tbl[[1]])
+  count_df <- tbl[, -1, drop = FALSE]
+  if (any(!nzchar(names(count_df)))) stop("All sample count columns must have names.")
+  count_mat <- as.matrix(count_df)
+  suppressWarnings(storage.mode(count_mat) <- "numeric")
+  if (anyNA(count_mat)) stop("Count matrix sample columns contain non-numeric values.")
+  count_mat <- round(count_mat)
+  storage.mode(count_mat) <- "integer"
+  rownames(count_mat) <- gene_ids
+  keep <- !is.na(rownames(count_mat)) & nzchar(rownames(count_mat))
+  count_mat <- count_mat[keep, , drop = FALSE]
+  if (nrow(count_mat) == 0 || ncol(count_mat) == 0) stop("No usable count matrix could be extracted.")
+  if (anyDuplicated(rownames(count_mat))) {
+    count_mat <- rowsum(count_mat, group = rownames(count_mat), reorder = FALSE)
+    storage.mode(count_mat) <- "integer"
+  }
+  count_mat
+}
+
+scan_count_matrix_file <- function(path) {
+  count_mat <- read_count_matrix_file(path)
+  data.frame(
+    sample_id = colnames(count_mat),
+    condition = "condition_1",
+    sample_label = colnames(count_mat),
+    stringsAsFactors = FALSE
+  )
+}
+
 scan_featurecounts_file <- function(path) {
   if (is.null(path) || !file.exists(path)) return(data.frame())
   count_mat <- read_featurecounts_count_matrix(path)
@@ -658,21 +736,33 @@ scan_featurecounts_file <- function(path) {
 
 run_deseq2_from_rsem <- function(folder, coldata, treatment, control, lfc_shrink = FALSE, min_count = 10,
                                  effect_col = NULL, effect_level = NULL, use_interaction = FALSE,
-                                 all_vs_control = TRUE) {
+                                 all_vs_control = TRUE, quant_type = "rsem", tx2gene_file = NULL,
+                                 rsem_tx_ids = FALSE) {
+  quant_type <- match.arg(quant_type, c("rsem", "salmon", "kallisto"))
   required <- c("DESeq2", "tximport", "tibble")
   missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) stop("Missing required packages: ", paste(missing, collapse = ", "))
 
-  rsem_table <- scan_rsem_files(folder)
-  if (nrow(rsem_table) == 0) stop("No .genes.results files were found in the selected folder.")
+  quant_table <- scan_tximport_quant_files(folder, quant_type, rsem_tx_ids = rsem_tx_ids)
+  if (nrow(quant_table) == 0) {
+    expected_file <- switch(
+      quant_type,
+      rsem = if (isTRUE(rsem_tx_ids)) ".transcripts.results" else ".genes.results",
+      salmon = "quant.sf",
+      kallisto = "abundance.tsv"
+    )
+    stop("No ", expected_file, " files were found in the selected folder.")
+  }
 
   coldata <- normalize_coldata(coldata, sample_col = "sample_id", condition_col = "condition", label_col = "sample_label")
-  coldata$sample_id <- sub("\\.genes\\.results$", "", basename(coldata$sample_id))
+  if (identical(quant_type, "rsem")) {
+    coldata$sample_id <- sub("\\.(genes|transcripts)\\.results$", "", basename(coldata$sample_id))
+  }
   rownames(coldata) <- coldata$sample_id
-  rsem_table <- rsem_table[match(coldata$sample_id, rsem_table$sample_id), , drop = FALSE]
-  if (any(is.na(rsem_table$file))) {
-    missing_samples <- coldata$sample_id[is.na(rsem_table$file)]
-    stop("These colData sample_id values do not match .genes.results files: ", paste(missing_samples, collapse = ", "))
+  quant_table <- quant_table[match(coldata$sample_id, quant_table$sample_id), , drop = FALSE]
+  if (any(is.na(quant_table$file))) {
+    missing_samples <- coldata$sample_id[is.na(quant_table$file)]
+    stop("These colData sample_id values do not match ", quant_type, " quantification files: ", paste(missing_samples, collapse = ", "))
   }
 
   if (!treatment %in% coldata$condition) stop("Treatment is not present in colData condition column.")
@@ -725,11 +815,21 @@ run_deseq2_from_rsem <- function(folder, coldata, treatment, control, lfc_shrink
   coldata$condition <- droplevels(coldata$condition)
   if ("de_effect" %in% names(coldata)) coldata$de_effect <- droplevels(coldata$de_effect)
 
-  rsem_table <- rsem_table[match(coldata$sample_id, rsem_table$sample_id), , drop = FALSE]
-  files <- rsem_table$file
+  quant_table <- quant_table[match(coldata$sample_id, quant_table$sample_id), , drop = FALSE]
+  files <- quant_table$file
   names(files) <- coldata$sample_id
 
-  txi <- tximport::tximport(files, type = "rsem", txIn = FALSE, txOut = FALSE)
+  if (identical(quant_type, "rsem")) {
+    if (isTRUE(rsem_tx_ids)) {
+      tx2gene <- read_tx2gene_table(tx2gene_file)
+      txi <- tximport::tximport(files, type = "rsem", txIn = TRUE, txOut = FALSE, tx2gene = tx2gene)
+    } else {
+      txi <- tximport::tximport(files, type = "rsem", txIn = FALSE, txOut = FALSE)
+    }
+  } else {
+    tx2gene <- read_tx2gene_table(tx2gene_file)
+    txi <- tximport::tximport(files, type = quant_type, tx2gene = tx2gene)
+  }
   txi$length[txi$length == 0] <- 1
   dds <- DESeq2::DESeqDataSetFromTximport(txi, colData = coldata, design = design_formula)
   keep <- rowSums(DESeq2::counts(dds)) >= min_count
@@ -961,6 +1061,160 @@ run_deseq2_from_featurecounts <- function(counts_file, coldata, treatment, contr
     all_comparisons = all_comparisons,
     summary = paste(c(
       paste0("Input: featureCounts"),
+      paste0("Design formula: ", design_label),
+      paste0("Contrast: ", contrast_label),
+      if (isTRUE(all_vs_control)) paste0("All comparisons vs control: ", paste(setdiff(levels(coldata$condition), control), collapse = ", "), " vs ", control) else NULL,
+      capture.output(summary(res))
+    ), collapse = "\n"),
+    design_formula = design_label,
+    contrast = contrast_label,
+    coldata = coldata
+  )
+}
+
+run_deseq2_from_count_matrix <- function(counts_file, coldata, treatment, control, lfc_shrink = FALSE, min_count = 10,
+                                         effect_col = NULL, effect_level = NULL, use_interaction = FALSE,
+                                         all_vs_control = TRUE) {
+  required <- c("DESeq2", "tibble")
+  missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
+  if (length(missing)) stop("Missing required packages: ", paste(missing, collapse = ", "))
+
+  count_mat <- read_count_matrix_file(counts_file)
+  coldata <- normalize_coldata(coldata, sample_col = "sample_id", condition_col = "condition", label_col = "sample_label")
+  rownames(coldata) <- coldata$sample_id
+  missing_samples <- setdiff(coldata$sample_id, colnames(count_mat))
+  if (length(missing_samples) > 0) {
+    stop("These colData sample_id values do not match count matrix columns: ", paste(missing_samples, collapse = ", "))
+  }
+  count_mat <- count_mat[, coldata$sample_id, drop = FALSE]
+
+  if (!treatment %in% coldata$condition) stop("Treatment is not present in colData condition column.")
+  if (!control %in% coldata$condition) stop("Control is not present in colData condition column.")
+
+  coldata$condition <- factor(coldata$condition)
+  coldata$condition <- stats::relevel(coldata$condition, ref = control)
+  design_formula <- ~ condition
+  results_contrast <- c("condition", treatment, control)
+  contrast_label <- paste0("condition: ", treatment, " vs ", control)
+  design_label <- "~ condition"
+
+  if (!is.null(effect_col) && nzchar(effect_col) && identical(effect_col, "condition")) {
+    if (isTRUE(use_interaction)) {
+      stop("Interaction requires a separate effect column in colData, not the condition column itself.")
+    }
+    design_label <- "~ condition"
+    contrast_label <- paste0("condition: ", treatment, " vs ", control, " in a multi-level condition column")
+  } else if (!is.null(effect_col) && nzchar(effect_col)) {
+    if (!effect_col %in% names(coldata)) stop("Selected effect column is not present in colData.")
+    effect_values <- trimws(as.character(coldata[[effect_col]]))
+    effect_values[!nzchar(effect_values)] <- NA_character_
+    coldata$de_effect <- factor(effect_values)
+    coldata <- coldata[!is.na(coldata$de_effect), , drop = FALSE]
+    if (nrow(coldata) == 0) stop("No samples remain after removing missing values from the selected effect column.")
+    if (!treatment %in% coldata$condition) stop("Treatment is not present after removing missing values from the selected effect column.")
+    if (!control %in% coldata$condition) stop("Control is not present after removing missing values from the selected effect column.")
+    count_mat <- count_mat[, coldata$sample_id, drop = FALSE]
+    if (is.null(effect_level) || !nzchar(effect_level)) {
+      effect_level <- levels(coldata$de_effect)[1]
+    }
+    if (!effect_level %in% levels(coldata$de_effect)) stop("Selected effect level is not present in the effect column.")
+    coldata$de_effect <- stats::relevel(coldata$de_effect, ref = effect_level)
+
+    if (isTRUE(use_interaction)) {
+      has_treatment_at_effect <- any(coldata$condition == treatment & coldata$de_effect == effect_level)
+      has_control_at_effect <- any(coldata$condition == control & coldata$de_effect == effect_level)
+      if (!has_treatment_at_effect || !has_control_at_effect) {
+        stop("For the interaction test, both treatment and control must have samples at effect level '", effect_level, "'.")
+      }
+      design_formula <- ~ condition + de_effect + condition:de_effect
+      design_label <- paste0("~ condition + ", effect_col, " + condition:", effect_col)
+      contrast_label <- paste0("condition: ", treatment, " vs ", control, " at ", effect_col, " = ", effect_level, " (", effect_col, " re-leveled as reference)")
+    } else {
+      design_formula <- ~ condition + de_effect
+      design_label <- paste0("~ condition + ", effect_col)
+      contrast_label <- paste0("condition: ", treatment, " vs ", control, " adjusted for ", effect_col, " (reference: ", effect_level, ")")
+    }
+  }
+
+  coldata$condition <- droplevels(coldata$condition)
+  if ("de_effect" %in% names(coldata)) coldata$de_effect <- droplevels(coldata$de_effect)
+
+  dds <- DESeq2::DESeqDataSetFromMatrix(countData = count_mat, colData = coldata, design = design_formula)
+  keep <- rowSums(DESeq2::counts(dds)) >= min_count
+  dds <- dds[keep, ]
+  dds <- DESeq2::DESeq(dds)
+
+  result_table_for_contrast <- function(contrast_vec) {
+    res <- DESeq2::results(dds, contrast = contrast_vec, alpha = 0.05)
+    if (isTRUE(lfc_shrink)) {
+      if (requireNamespace("ashr", quietly = TRUE)) {
+        res <- DESeq2::lfcShrink(dds, contrast = contrast_vec, res = res, type = "ashr")
+      } else {
+        warning("Package 'ashr' is not installed, so lfcShrink was skipped.")
+      }
+    }
+    res_df <- as.data.frame(res)
+    res_df$gene_id <- rownames(res_df)
+    res_df <- tibble::as_tibble(res_df)
+    if ("pvalue" %in% names(res_df)) names(res_df)[names(res_df) == "pvalue"] <- "pValue"
+    res_df <- res_df[, c("gene_id", setdiff(names(res_df), "gene_id"))]
+    res_df <- standardize_de_table(res_df, merge_default_description = FALSE)
+    res_df[order(res_df$padj), , drop = FALSE]
+  }
+
+  res <- DESeq2::results(dds, contrast = results_contrast, alpha = 0.05)
+  if (isTRUE(lfc_shrink)) {
+    if (requireNamespace("ashr", quietly = TRUE)) {
+      res <- DESeq2::lfcShrink(dds, contrast = results_contrast, res = res, type = "ashr")
+    } else {
+      warning("Package 'ashr' is not installed, so lfcShrink was skipped.")
+    }
+  }
+  res_df <- as.data.frame(res)
+  res_df$gene_id <- rownames(res_df)
+  res_df <- tibble::as_tibble(res_df)
+  if ("pvalue" %in% names(res_df)) names(res_df)[names(res_df) == "pvalue"] <- "pValue"
+  res_df <- res_df[, c("gene_id", setdiff(names(res_df), "gene_id"))]
+  res_df <- standardize_de_table(res_df, merge_default_description = FALSE)
+  res_df <- res_df[order(res_df$padj), , drop = FALSE]
+
+  all_comparisons <- NULL
+  if (isTRUE(all_vs_control)) {
+    comparison_levels <- setdiff(levels(coldata$condition), control)
+    comparison_tables <- lapply(comparison_levels, function(level) {
+      result_table_for_contrast(c("condition", level, control))
+    })
+    names(comparison_tables) <- paste0(comparison_levels, "_vs_", control)
+    all_comparisons <- list(
+      control = control,
+      comparisons = comparison_levels,
+      tables = comparison_tables
+    )
+  }
+
+  norm_counts <- as.data.frame(DESeq2::counts(dds, normalized = TRUE))
+  norm_counts$gene_id <- clean_gene_id(rownames(norm_counts))
+  norm_counts <- norm_counts[, c("gene_id", setdiff(names(norm_counts), "gene_id"))]
+
+  vst_obj <- if (nrow(dds) < 1000) {
+    DESeq2::varianceStabilizingTransformation(dds, blind = FALSE)
+  } else {
+    DESeq2::vst(dds, blind = FALSE)
+  }
+  pca_data <- DESeq2::plotPCA(vst_obj, intgroup = "condition", returnData = TRUE)
+  percentVar <- round(100 * attr(pca_data, "percentVar"), 1)
+  pca_data$name <- rownames(pca_data)
+  pca_data$sample_label <- coldata$sample_label[match(pca_data$name, coldata$sample_id)]
+  pca_data$percentVar1 <- percentVar[1]
+  pca_data$percentVar2 <- percentVar[2]
+
+  list(
+    de_table = res_df,
+    norm_counts = norm_counts,
+    pca_table = pca_data,
+    all_comparisons = all_comparisons,
+    summary = paste(c(
+      paste0("Input: count matrix"),
       paste0("Design formula: ", design_label),
       paste0("Contrast: ", contrast_label),
       if (isTRUE(all_vs_control)) paste0("All comparisons vs control: ", paste(setdiff(levels(coldata$condition), control), collapse = ", "), " vs ", control) else NULL,

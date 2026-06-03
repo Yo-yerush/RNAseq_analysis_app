@@ -10,7 +10,7 @@ cran_packages <- c(
 
 bioc_packages <- c(
   "DESeq2", "tximport", "topGO", "AnnotationDbi",
-  "SummarizedExperiment", "rrvgo", "biomaRt"#, "org.At.tair.db", "org.Hs.eg.db", "GO.db"
+  "SummarizedExperiment", "rrvgo", "biomaRt", "GO.db"#, "org.At.tair.db", "org.Hs.eg.db"
 )
 
 install_missing_cran <- function(pkgs) {

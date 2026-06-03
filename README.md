@@ -1,6 +1,6 @@
 # RNA-seq Analysis Dashboard
 
-A local R Shiny dashboard for RNA-seq differential expression analysis, annotation building, and downstream visualization.
+A local R Shiny dashboard for RNA-seq differential expression analysis, count/quantification import, annotation building, dependency checks, and downstream visualization.
 
 **Author:** Yonatan Yerushalmy  
 Plant's metabolism and molecular genetic lab, Prof. Rachel Amir group
@@ -39,9 +39,20 @@ If standard column names are not found, the app treats the first three columns a
 
 After loading the table, the app auto-detects common `gene_id` formats such as TAIR, Ensembl, RefSeq, Entrez, UniProt, and gene symbols, then updates the Gene ID type in the Organism annotations tab. You can still change it manually.
 
-### Run DESeq2 From RSEM Or featureCounts
+### Run DESeq2 From Quantification Or Count Files
 
-Point the app to a folder containing `*.genes.results` files, or upload a featureCounts output table. The app scans sample IDs and creates editable colData.
+The app can run DESeq2 directly from several count/quantification input types:
+
+| Input type | Expected files | Notes |
+|------------|----------------|-------|
+| RSEM gene mode | `*.genes.results` | Default RSEM mode. Input rows are treated as gene IDs. |
+| RSEM transcript mode | `*.transcripts.results` | Check **RSEM files contain transcript IDs** and provide a two-column tx2gene table. |
+| Salmon | `*/quant.sf` | One sample folder per `quant.sf`; requires tx2gene. |
+| Kallisto | `*/abundance.tsv` | One sample folder per `abundance.tsv`; requires tx2gene. |
+| featureCounts | one uploaded TXT/TSV/CSV table | Uses columns after `gene_biotype` when present, otherwise after `Length`. |
+| Count matrix | one uploaded CSV/TSV/TXT/XLS/XLSX table | First column is gene IDs; remaining columns are raw sample counts. |
+
+The app scans sample IDs and creates editable colData.
 
 colData supports CSV, TSV, TXT, XLS, and XLSX files. Text files can use comma or tab delimiters.
 
@@ -53,6 +64,15 @@ Supported column patterns:
 | `condition` | `1st` / `2nd` / `3rd` | No |
 | `sample_label` optional | `2nd` / `3rd` / `4th` | Yes |
 | `effect` optional | `≥ 3rd` | NO |
+
+After colData is loaded, use the **Condition / group column** selector above the colData preview to choose which column defines treatment/control groups.
+
+tx2gene options support:
+
+- Upload a two-column tx2gene table.
+- Build tx2gene from GTF/GFF by choosing transcript and gene ID attributes.
+- Build Arabidopsis TAIR-style tx2gene by stripping the final `.number` suffix from transcript IDs.
+- Preview and download the generated tx2gene table before using it.
 
 Extra colData columns are preserved. You can choose one extra effect column for DESeq2:
 
@@ -89,9 +109,9 @@ Annotation table downloads include the organism name and tax ID in the filename.
 ### Data Input
 
 - Summary of loaded genes.
-- Editable colData in RSEM mode.
+- Editable colData in DESeq2 count/quantification mode.
 - All condition-vs-control DESeq2 results with a shared significant-gene Venn diagram.
-- PCA plot after running DESeq2 from RSEM files.
+- PCA plot after running DESeq2 from quantification/count files.
 - PCA condition selector and sample-label toggle.
 - DE table preview.
 - Download DE table and normalized counts.
@@ -172,10 +192,11 @@ Human or other organism TE analysis requires a compatible TE-level annotation ta
 
 - Session log.
 - Developer notes and app usage help.
+- Dependencies sub-tab showing required R packages, installed status, versions, and which analyses are affected if a package is missing.
 
 ## Sidebar Controls
 
-- Data input mode and DESeq2/RSEM controls.
+- Data input mode and DESeq2 count/quantification controls.
 - Significance thresholds: `padj` and `|log2FC|`.
 - Tab-specific plot size controls.
 - GO and Hallmark filters only appear on their relevant tabs.
@@ -187,12 +208,12 @@ The upregulated/downregulated/not-significant colors are used across DE result p
 
 - The bundled TE workflow is Arabidopsis-specific.
 - GO requires the selected OrgDb package to be installed, for example `org.At.tair.db` or `org.Hs.eg.db`.
-  - Some analysis tabs require extra Bioconductor packages when used, especially `GO.db`, `KEGGREST`, `pathview`, and the selected `org.*.db` organism package. The app can install supported OrgDb packages from the Organism annotations tab.
+  - Some analysis tabs require extra Bioconductor packages when used, especially `GO.db`, `KEGGREST`, `pathview`, and the selected `org.*.db` organism package. The app can install supported OrgDb packages when GO is run.
 - E. coli K-12 GO analysis supports `b####` locus tags through the app's alias normalization and supports RefSeq accessions through OrgDb `REFSEQ`/`ACCNUM` where available.
 - KEGG and Pathview require internet access when KEGG data or pathway images are not cached.
 - UniProt annotation building requires internet access.
 - RefSeq GTF annotation building works from a local GTF file and does not require internet access after the GTF is downloaded.
-- PCA requires count data and is available only after running DESeq2 from RSEM files.
+- PCA requires count data and is available only after running DESeq2 from quantification/count files.
 - No results are saved automatically. Use the download buttons.
 
 ## Troubleshooting R Not Found
@@ -222,6 +243,5 @@ set "RSCRIPT=C:\Program Files\R\R-4.5.0\bin\Rscript.exe"
   - `launch_app.R` - launches the Shiny app from R.
   - `diagnose_R_installation.bat` - checks common Windows R installation paths if the launchers cannot find `Rscript.exe`.
   - `description_files/` - optional local data files. Default Arabidopsis, human, E. coli K-12 MG1655 annotation tables and TAIR10 TE metadata are loaded from GitHub when internet is available.
-  - Optional local data files can be added by the user. Default Arabidopsis, human, E. coli K-12 MG1655 annotation tables and TAIR10 TE metadata are loaded from GitHub when internet is available.
 - `install.bat` - Windows first-run launcher that installs missing packages.
 - `RA_RNAseq_analysis_app.bat` - faster launcher for later runs.

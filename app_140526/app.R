@@ -20,6 +20,7 @@ options(shiny.maxRequestSize = 500 * 1024^2)
 
 source(file.path("R", "opening_yo.R"), local = TRUE)
 source(file.path("R", "helpers.R"), local = TRUE)
+source(file.path("R", "count_data_preview.R"), local = TRUE)
 source(file.path("R", "build_uniprot_description_file.R"), local = TRUE)
 source(file.path("R", "build_refseq_gftf_description_file.R"), local = TRUE)
 source(file.path("legacy_scripts", "volcano_TEG_overlap_with_TE_families_RNAseq.R"), local = TRUE)
@@ -137,7 +138,7 @@ dependency_catalog <- data.frame(
   Needed_for = c(
     "Core R runtime. Nothing runs without R.",
     "Main Shiny app server and UI.",
-    "Folder picker for RSEM input directories.",
+    "Folder picker for RSEM/Salmon/Kallisto input directories.",
     "Current app theme. App can run without it only if the theme call is changed.",
     "Optional Bootstrap/theme support.",
     "Interactive tables throughout the app.",
@@ -149,8 +150,8 @@ dependency_catalog <- data.frame(
     "Table/data-frame helpers.",
     "Data reshaping in helper workflows.",
     "Excel upload support for DE tables and colData.",
-    "Run DESeq2 from RSEM or featureCounts counts.",
-    "Import RSEM quantification files into DESeq2.",
+    "Run DESeq2 from RSEM, Salmon, Kallisto, or featureCounts counts.",
+    "Import transcript quantification files into DESeq2.",
     "DESeq2 count containers and result objects.",
     "Optional log2FC shrinkage when selected.",
     "All-comparison Venn diagram in the Data input tab.",
@@ -174,7 +175,7 @@ dependency_catalog <- data.frame(
   If_missing = c(
     "Install R and make Rscript discoverable by the launcher.",
     "The app cannot start.",
-    "RSEM folder browsing will not work.",
+    "Quantification-folder browsing will not work.",
     "The current UI theme may fail unless replaced with another theme.",
     "Optional bslib features/themes are unavailable.",
     "Tables will not render.",
@@ -187,7 +188,7 @@ dependency_catalog <- data.frame(
     "Some reshaping workflows may fail.",
     "XLS/XLSX uploads will fail.",
     "DESeq2-from-counts workflow will not work.",
-    "RSEM import into DESeq2 will not work.",
+    "Transcript-quantification import into DESeq2 will not work.",
     "DESeq2 workflow may fail.",
     "LFC shrinkage is skipped.",
     "The all-comparison Venn plot will not work.",
@@ -498,6 +499,13 @@ pmn_database_choices <- c("Not available for selected organism" = "", pmn_catalo
 
 ui <- fluidPage(
   theme = shinythemes::shinytheme("united"),
+  tags$style(HTML("
+    .coldata-dt-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+    .coldata-condition-toolbar { flex: 1 1 300px; max-width: 340px; }
+    .coldata-condition-toolbar .form-group { margin-bottom: 0; }
+    .coldata-condition-toolbar label { margin-bottom: 2px; font-size: 12px; }
+    .coldata-dt-top .dataTables_filter { margin-left: auto; }
+  ")),
   tags$head(
     tags$style(HTML("\n    .app-title { margin-top: 10px; margin-bottom: 4px; font-weight: 700; }\n    .muted { color: #666; font-size: 0.92em; }\n    .tab-content { padding: 16px; border: 1px solid #ddd; border-top: none; }\n    .download-row .btn { margin-right: 8px; margin-top: 6px; }\n    .annotation-input-row { display: flex; align-items: stretch; }\n    .annotation-input-row > [class*='col-'] { display: flex; }\n    .annotation-input-row .well { flex: 1; width: 100%; }\n    pre { white-space: pre-wrap; }\n    table.dataTable tbody td { padding-top: 1.5px; padding-bottom: 1.5px; line-height: 1.25; }\n    #settings_toggle_btn { margin: 4px 0 10px 0; }\n    body.settings-hidden #settings_sidebar { display: none; }\n    body.settings-hidden #main_content { width: 100%; }\n    .row-detail-modal { max-height: 70vh; overflow-y: auto; }\n    .row-detail-table th { width: 190px; vertical-align: top; white-space: nowrap; }\n    .row-detail-table td { white-space: pre-wrap; word-break: break-word; }\n  ")),
     tags$script(HTML("\n      $(document).on('click', '#settings_toggle_btn', function() {\n        var hidden = !$('body').hasClass('settings-hidden');\n        $('body').toggleClass('settings-hidden', hidden);\n        $(this).text(hidden ? '☰ ►' : '◄ ☰');\n      });\n    "))
@@ -507,7 +515,7 @@ ui <- fluidPage(
   # if (requireNamespace("shinythemes", quietly = TRUE)) shinythemes::themeSelector(),
 
   titlePanel(div(class = "app-title", "RNA-seq Analysis Dashboard")),
-  div(class = "muted", "Load DE results directly, or run DESeq2 from `RSEM .genes.results` files or `featureCounts` output."),
+  div(class = "muted", "Load DE results directly, or run DESeq2 from RSEM, Salmon, Kallisto, or featureCounts output."),
   br(),
   div(
     style = "text-align: left;",
@@ -523,30 +531,62 @@ ui <- fluidPage(
     sidebarPanel(id = "settings_sidebar", width = 3,
       conditionalPanel("input.tabs == 'Data input'",
         h4("Data input"),
-        radioButtons("data_mode", NULL,
-          choices = c(
-            "Upload DE results (Excel/CSV/TSV)" = "csv",
-            "Run DESeq2 (RSEM/featureCounts)" = "rsem"
-          ), selected = "csv"),
+        div(style = "display: flex; align-items: flex-start; gap: 6px;",
+          div(style = "flex: 1;",
+            radioButtons("data_mode", NULL,
+              choices = c(
+                "Upload DE results table (Excel/CSV/TSV)" = "csv",
+                #"Run DESeq2 (RSEM/Salmon/Kallisto/featureCounts/count matrix)" = "rsem"
+                "Upload RNA-seq count data" = "rsem"
+              ), selected = "csv")
+          ),
+          actionButton(
+            "show_count_data_examples",
+            #"𝒊",
+            "ℹ",
+            #"𝓲",
+            class = "btn-warning btn-xs",
+            title = "Show RNA-seq count data input examples",
+            style = "margin-top: 28px; border-radius: 90%; width: 18px; height: 18px; padding: 0;"
+          )
+        ),
 
         conditionalPanel("input.data_mode == 'csv'",
           fileInput("de_file", "DE results table", accept = c(".csv", ".tsv", ".txt", ".xlsx", ".xls")),
-          div(class = "muted", "Required columns: gene_id, log2FoldChange, padj. baseMean enables MA plot.")
+          div(class = "muted", "Required: gene_id, log2FoldChange, padj."),
+          div(class = "muted", "Column names are case-insensitive; extra columns are allowed."),
+          div(class = "muted", "If names are not detected, columns are read by order: gene_id, log2FoldChange, padj."),
+          div(class = "muted", "Optional column: baseMean for MA plot.")
         ),
 
         conditionalPanel("input.data_mode == 'rsem'",
           radioButtons("deseq_input_type", "DESeq2 input",
-            choices = c("RSEM .genes.results folder" = "rsem", "featureCounts output table" = "featurecounts"),
+            choices = c(
+              "📁 RSEM - *.genes.results" = "rsem",
+              "📁 Salmon - */quant.sf" = "salmon",
+              "📁 Kallisto - */abundance.tsv" = "kallisto",
+              "📄 featureCounts - counts (TSV)" = "featurecounts",
+              "📄 Count matrix - gene x sample (Excel/CSV/TSV)" = "countmatrix"),
             selected = "rsem"),
-          conditionalPanel("input.deseq_input_type == 'rsem'",
-            shinyDirButton("choose_rsem_dir", "Choose RSEM folder", "Select a folder"),
-            textInput("rsem_path", "RSEM folder path", value = ""),
-            actionButton("scan_rsem", "Scan folder", class = "btn-primary")
+          conditionalPanel("input.deseq_input_type == 'rsem' || input.deseq_input_type == 'salmon' || input.deseq_input_type == 'kallisto'",
+            shinyDirButton("choose_rsem_dir", "Choose quantification folder", "Select a folder"),
+            textInput("rsem_path", "Quantification folder path", value = ""),
+            actionButton("scan_rsem", "Scan folder", class = "btn-primary"),
+            tags$hr(),
+            conditionalPanel("input.deseq_input_type == 'rsem'",
+              checkboxInput("rsem_transcript_ids", "RSEM files contain transcript IDs (not gene IDs)", value = FALSE)
+            ),
+            uiOutput("tx2gene_controls_ui")
           ),
           conditionalPanel("input.deseq_input_type == 'featurecounts'",
-            fileInput("featurecounts_file", "featureCounts output", accept = c(".txt", ".tsv", ".csv")),
+            fileInput("featurecounts_file", "featureCounts output file", accept = c(".txt", ".tsv", ".csv")),
             actionButton("scan_featurecounts", "Load samples", class = "btn-primary"),
             div(class = "muted", "Uses columns after gene_biotype when present; otherwise columns after Length.")
+          ),
+          conditionalPanel("input.deseq_input_type == 'countmatrix'",
+            fileInput("count_matrix_file", "Count matrix file", accept = c(".csv", ".tsv", ".txt", ".xlsx", ".xls")),
+            actionButton("scan_count_matrix", "Load samples", class = "btn-primary"),
+            div(class = "muted", "First column must be gene IDs. All other columns must be raw integer sample counts, with sample names as column headers.")
           ),
           tags$hr(),
           fileInput("coldata_file", "Optional colData (Excel/CSV/TSV)", accept = c(".csv", ".tsv", ".txt", ".xlsx", ".xls")),
@@ -682,14 +722,15 @@ ui <- fluidPage(
             h4(style = "margin: 0;", "Editable colData"),
             actionButton(
               "add_coldata_effect_col",
+              #"✙",
               "+",
               class = "btn-default btn-xs",
-              style = "padding: 0.5px 4px; font-size: 12px;"
+              style = "border-radius: 30%; width: 12px; height: 12px; padding: 0; display: inline-flex; align-items: center; justify-content: center;"
             )
           ),
             DTOutput("coldata_table"),
-            div(class = "muted", "Edit the condition column, then select treatment/control in the sidebar and run DESeq2."),
-            div(class = "muted", "Use ✚ button to add effect column."),
+            div(class = "muted", "Use ✚ button to add an effects column."),
+            # div(class = "muted", "Choose the condition/group column above the table, then select treatment/control in the sidebar and run DESeq2."),
             tags$hr()
           ),
           uiOutput("data_summary_box"),
@@ -1229,11 +1270,7 @@ ui <- fluidPage(
             tabPanel("Volcano Plot",
               wellPanel(
                 fluidRow(
-                  column(4,
-                    selectizeInput("te_super_families", "TE super-families", choices = te_super_family_choices,
-                                   selected = head(te_super_family_choices, 3), multiple = TRUE,
-                                   options = list(placeholder = "Type to search super-families", create = FALSE))
-                  ),
+                  column(4, uiOutput("te_super_families_ui")),
                   column(3, numericInput("te_padj_cutoff", "padj cutoff", value = 0.05, min = 0, max = 1, step = 0.01)),
                   column(3, numericInput("te_lfc_cutoff", "|log2FC| cutoff", value = 1, min = 0, step = 0.25)),
                   column(2, br(), actionButton("run_te_volcano", "Build TE volcano", class = "btn-primary", style = "width:100%;"))
@@ -1241,10 +1278,34 @@ ui <- fluidPage(
                 div(class = "muted", "Uses the default Arabidopsis description file and TAIR10 TE metadata from GitHub.")
               ),
               fluidRow(
-                column(12,
+                column(9,
                   h4("TEG volcano plot"),
                   plotOutput("te_volcano_plot", width = "auto", height = "auto"),
-                  download_plot_ui("te_volcano", "Download TE volcano plot"),
+                  download_plot_ui("te_volcano", "Download TE volcano plot")
+                ),
+                column(3,
+                  wellPanel(
+                    h4("Color"),
+                    selectInput("te_color_palette", "TE color set",
+                      choices = c(
+                        "Default" = "default",
+                        "Okabe-Ito" = "okabe_ito",
+                        "Set 1" = "set1",
+                        "Set 2" = "set2",
+                        "Dark 2" = "dark2",
+                        "Paired" = "paired",
+                        "Tableau" = "tableau",
+                        "Viridis" = "viridis",
+                        "Plasma" = "plasma",
+                        "Pastel" = "pastel"
+                      ),
+                      selected = "default"
+                    )
+                  )
+                )
+              ),
+              fluidRow(
+                column(12,
                   tags$hr(),
                   DTOutput("te_volcano_table"),
                   div(class = "download-row", downloadButton("download_te_volcano_table", "Download TE volcano table"))
@@ -1278,8 +1339,8 @@ ui <- fluidPage(
               tags$hr(),
               h4("Notes & Usage"),
               tags$ul(
-                tags$li(strong("Data input: "), "Upload DE CSV/TSV/TXT files or run DESeq2 directly from RSEM ", code("*.genes.results"), " files. CSV, TSV, and TXT uploads can use comma or tab delimiters. PCA is shown here only after running DESeq2 from RSEM count data."),
-                tags$li(strong("DESeq2 from RSEM: "), "Use the editable colData table to set conditions. Optional extra colData columns can be used as an adjusted effect or as a condition:effect interaction. The Data tab prints the exact model formula and contrast."),
+                tags$li(strong("Data input: "), "Upload DE CSV/TSV/TXT files or run DESeq2 directly from RSEM ", code("*.genes.results"), ", Salmon ", code("quant.sf"), ", Kallisto ", code("abundance.tsv"), ", featureCounts output, or a count matrix with gene IDs in the first column and sample counts in the remaining columns. CSV, TSV, and TXT uploads can use comma or tab delimiters. PCA is shown here only after running DESeq2 from count/quantification data."),
+                tags$li(strong("DESeq2 from quantification/counts: "), "Use the editable colData table to set conditions. Salmon and Kallisto require a two-column tx2gene table. Optional extra colData columns can be used as an adjusted effect or as a condition:effect interaction. The Data tab prints the exact model formula and contrast."),
                 tags$li(strong("DE results: "), "Volcano and MA plots use ", code("gene_id"), ", ", code("log2FoldChange"), ", ", code("padj"), " and optional ", code("baseMean"), ". The annotation search table is shown below the plots."),
                 tags$li(strong("Organism annotations: "), "Choose organism and Gene ID type, load a manual annotation table, or build one from UniProt. Human Ensembl IDs can be bridged through the selected OrgDb when available."),
                 tags$li(strong("DE preview: "), "The compact DE summary and preview table are shown in the Data input tab with DE and normalized-count downloads."),
@@ -1330,6 +1391,8 @@ server <- function(input, output, session) {
     norm_counts = NULL,
     pca = NULL,
     coldata = NULL,
+    coldata_raw = NULL,
+    coldata_condition_col = NULL,
     de_summary = NULL,
     de_design_formula = NULL,
     de_contrast = NULL,
@@ -1371,6 +1434,11 @@ server <- function(input, output, session) {
     annotation_label = "Default Arabidopsis description file (GitHub)",
     annotation_replace_gene_id = FALSE,
     annotation_preview_ready = FALSE,
+    tx2gene_df = NULL,
+    tx2gene_path = NULL,
+    tx2gene_label = NULL,
+    tx2gene_gtf_attributes = NULL,
+    tx2gene_gtf_status = NULL,
     uniprot_id_choices = NULL,
     uniprot_status = "Scan UniProt ID sources for the selected organism before building.",
     refseq_gtf_id_choices = NULL,
@@ -1572,6 +1640,150 @@ server <- function(input, output, session) {
     if (!nzchar(x)) fallback else x
   }
 
+  normalize_tx2gene_mapping <- function(tx2gene) {
+    tx2gene <- as.data.frame(tx2gene, check.names = FALSE)
+    if (ncol(tx2gene) < 2) stop("tx2gene mapping must have transcript and gene ID columns.")
+    tx2gene <- tx2gene[, 1:2, drop = FALSE]
+    names(tx2gene) <- c("TXNAME", "GENEID")
+    tx2gene$TXNAME <- trimws(as.character(tx2gene$TXNAME))
+    tx2gene$GENEID <- trimws(as.character(tx2gene$GENEID))
+    tx2gene <- tx2gene[!is.na(tx2gene$TXNAME) & nzchar(tx2gene$TXNAME) &
+                         !is.na(tx2gene$GENEID) & nzchar(tx2gene$GENEID), , drop = FALSE]
+    tx2gene <- tx2gene[!duplicated(tx2gene$TXNAME), , drop = FALSE]
+    if (nrow(tx2gene) == 0) stop("tx2gene mapping has no usable rows.")
+    tx2gene
+  }
+
+  save_tx2gene_mapping <- function(tx2gene, label) {
+    tx2gene <- normalize_tx2gene_mapping(tx2gene)
+
+    out_path <- tempfile("tx2gene_", fileext = ".csv")
+    write.csv(tx2gene, out_path, row.names = FALSE)
+    rv$tx2gene_df <- tx2gene
+    rv$tx2gene_path <- out_path
+    rv$tx2gene_label <- paste0(label, " (", nrow(tx2gene), " transcript mappings)")
+    append_log("Prepared tx2gene mapping:", rv$tx2gene_label)
+    invisible(tx2gene)
+  }
+
+  transcript_ids_from_quant_folder <- function(folder, quant_type, rsem_tx_ids = FALSE) {
+    quant_table <- scan_tximport_quant_files(folder, quant_type = quant_type, rsem_tx_ids = rsem_tx_ids)
+    if (nrow(quant_table) == 0) {
+      expected_file <- switch(quant_type, salmon = "quant.sf", kallisto = "abundance.tsv", "quantification")
+      stop("No ", expected_file, " files were found in the selected folder.")
+    }
+    ids <- unlist(lapply(quant_table$file, function(path) {
+      q <- read_any_table(path, source_name = basename(path))
+      id_col <- first_existing_col(q, c("Name", "target_id", "TXNAME", "transcript_id", "transcript"))
+      if (is.null(id_col)) id_col <- names(q)[1]
+      as.character(q[[id_col]])
+    }), use.names = FALSE)
+    ids <- trimws(ids)
+    unique(ids[!is.na(ids) & nzchar(ids)])
+  }
+
+  make_tair_style_tx2gene <- function(folder, quant_type, rsem_tx_ids = FALSE) {
+    tx <- transcript_ids_from_quant_folder(folder, quant_type, rsem_tx_ids = rsem_tx_ids)
+    if (!length(tx)) stop("No transcript IDs were found in the quantification files.")
+    data.frame(
+      TXNAME = tx,
+      GENEID = sub("\\.[0-9]+$", "", tx),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  load_gtf_attributes_for_tx2gene <- function(path) {
+    gtf <- read_refseq_gtf(path)
+    attr_df <- fast_parse_refseq_gtf_attributes(gtf$attribute)
+    attr_cols <- setdiff(names(attr_df), ".row_id")
+    if (!length(attr_cols)) stop("No GTF/GFF attributes were found.")
+    rv$tx2gene_gtf_attributes <- attr_df
+    rv$tx2gene_gtf_status <- paste("Loaded", nrow(attr_df), "GTF/GFF rows with", length(attr_cols), "attribute columns.")
+    attr_cols
+  }
+
+  current_tx2gene_modal_mapping <- function(source = input$tx2gene_source %||% "upload") {
+    if (identical(source, "upload")) {
+      req(input$tx2gene_modal_file$datapath)
+      return(list(
+        tx2gene = normalize_tx2gene_mapping(read_tx2gene_table(input$tx2gene_modal_file$datapath)),
+        label = paste("Uploaded", input$tx2gene_modal_file$name),
+        filename = "uploaded"
+      ))
+    }
+
+    if (identical(source, "gtf")) {
+      req(rv$tx2gene_gtf_attributes, input$tx2gene_gtf_transcript_col, input$tx2gene_gtf_gene_col)
+      attr_df <- rv$tx2gene_gtf_attributes
+      tx2gene <- data.frame(
+        TXNAME = attr_df[[input$tx2gene_gtf_transcript_col]],
+        GENEID = attr_df[[input$tx2gene_gtf_gene_col]],
+        stringsAsFactors = FALSE
+      )
+      return(list(
+        tx2gene = normalize_tx2gene_mapping(tx2gene),
+        label = paste0("GTF/GFF ", input$tx2gene_gtf_transcript_col, " -> ", input$tx2gene_gtf_gene_col),
+        filename = paste("gtf", input$tx2gene_gtf_transcript_col, input$tx2gene_gtf_gene_col, sep = "_")
+      ))
+    }
+
+    req(input$rsem_path)
+    quant_type <- input$deseq_input_type %||% "salmon"
+    if (!quant_type %in% c("rsem", "salmon", "kallisto")) {
+      stop("TAIR-style tx2gene can be built only for RSEM/Salmon/Kallisto input.")
+    }
+    list(
+      tx2gene = normalize_tx2gene_mapping(make_tair_style_tx2gene(
+        input$rsem_path,
+        quant_type,
+        rsem_tx_ids = identical(quant_type, "rsem") && isTRUE(input$rsem_transcript_ids)
+      )),
+      label = "Arabidopsis TAIR-style suffix stripping",
+      filename = "arabidopsis_tair_style"
+    )
+  }
+
+  coldata_condition_choices <- function(coldata) {
+    if (is.null(coldata) || ncol(coldata) == 0) return(character())
+    cols <- setdiff(names(coldata), c("sample_id", "file"))
+    if (!length(cols)) return(character())
+
+    group_cols <- cols[vapply(cols, function(col) {
+      vals <- trimws(as.character(coldata[[col]]))
+      vals <- vals[!is.na(vals) & nzchar(vals)]
+      length(vals) > 1 && length(unique(vals)) > 1 && length(unique(vals)) < length(vals)
+    }, logical(1))]
+    if (length(group_cols)) group_cols else cols
+  }
+
+  guess_coldata_condition_col <- function(coldata) {
+    choices <- coldata_condition_choices(coldata)
+    if (!length(choices)) return(NULL)
+    if ("condition" %in% choices) return("condition")
+    choices[1]
+  }
+
+  apply_coldata_condition_col <- function(condition_col = NULL) {
+    req(rv$coldata_raw)
+    raw <- as.data.frame(rv$coldata_raw, check.names = FALSE)
+    if (is.null(condition_col) || !condition_col %in% names(raw)) {
+      condition_col <- guess_coldata_condition_col(raw)
+    }
+    if (is.null(condition_col) || !condition_col %in% names(raw)) {
+      stop("No usable condition/group column is available in colData.")
+    }
+    sample_col <- if ("sample_id" %in% names(raw)) "sample_id" else NULL
+    label_col <- if ("sample_label" %in% names(raw)) "sample_label" else NULL
+    rv$coldata <- normalize_coldata(raw, sample_col = sample_col, condition_col = condition_col, label_col = label_col)
+    rv$coldata_condition_col <- condition_col
+    invisible(rv$coldata)
+  }
+
+  current_input_needs_tx2gene <- function(deseq_input_type = input$deseq_input_type %||% "rsem") {
+    deseq_input_type %in% c("salmon", "kallisto") ||
+      (identical(deseq_input_type, "rsem") && isTRUE(input$rsem_transcript_ids))
+  }
+
   msigdb_species_available <- function(species) {
     !is.null(species) && length(species) == 1 && nzchar(species) && species %in% msigdb_species_choices
   }
@@ -1737,21 +1949,207 @@ server <- function(input, output, session) {
     if (length(path) && nzchar(path)) updateTextInput(session, "rsem_path", value = path)
   })
 
+  count_data_preview_choices <- c(
+    "RSEM - *.genes.results" = "rsem",
+    "Salmon - */quant.sf" = "salmon",
+    "Kallisto - */abundance.tsv" = "kallisto",
+    "featureCounts output" = "featurecounts",
+    "Count matrix - gene x sample" = "countmatrix"
+  )
+
+  observeEvent(input$show_count_data_examples, {
+    selected_preview <- input$deseq_input_type %||% "rsem"
+    if (!selected_preview %in% count_data_preview_choices) selected_preview <- "rsem"
+    showModal(modalDialog(
+      title = "RNA-seq count data input examples",
+      selectInput(
+        "count_data_preview_type",
+        "Example type",
+        choices = count_data_preview_choices,
+        selected = selected_preview
+      ),
+      uiOutput("count_data_preview_content"),
+      size = "l",
+      easyClose = TRUE,
+      footer = modalButton("Close")
+    ))
+  })
+
+  output$count_data_preview_content <- renderUI({
+    input_type <- input$count_data_preview_type %||% "rsem"
+    tagList(
+      pre(
+        style = "max-height: 26vh; overflow: auto; white-space: pre-wrap;",
+        count_data_preview_notes(input_type)
+      ),
+      # h5("Example table:"),
+      DTOutput("count_data_preview_table")
+    )
+  })
+
+  output$count_data_preview_table <- renderDT({
+    input_type <- input$count_data_preview_type %||% "rsem"
+    datatable(
+      count_data_preview_table(input_type),
+      rownames = FALSE,
+      options = list(pageLength = 5, scrollX = TRUE, dom = "t")
+    )
+  })
+
+  output$tx2gene_status_ui <- renderUI({
+    if (is.null(rv$tx2gene_path)) {
+      return(div(class = "muted", "No tx2gene mapping prepared yet."))
+    }
+    tagList(
+      div(strong("tx2gene:"), " ", rv$tx2gene_label %||% basename(rv$tx2gene_path)),
+      if (!is.null(rv$tx2gene_df)) div(class = "muted", paste("Preview:", paste(head(rv$tx2gene_df$TXNAME, 2), collapse = ", ")))
+    )
+  })
+
+  output$tx2gene_controls_ui <- renderUI({
+    deseq_input_type <- input$deseq_input_type %||% "rsem"
+    if (!current_input_needs_tx2gene(deseq_input_type)) return(NULL)
+    help_text <- if (identical(deseq_input_type, "rsem")) {
+      "Required when RSEM files contain transcript IDs. tximport will use txIn = TRUE and summarize with tx2gene."
+    } else {
+      "Required for Salmon/Kallisto. Use an uploaded table, build from GTF/GFF, or auto-create TAIR-style by stripping final .number."
+    }
+    tagList(
+      uiOutput("tx2gene_status_ui"),
+      actionButton("open_tx2gene_options", "tx2gene options", class = "btn-default", style = "width:100%; margin-bottom: 8px;"),
+      div(class = "muted", help_text)
+    )
+  })
+
+  output$tx2gene_modal_body <- renderUI({
+    source <- input$tx2gene_source %||% "upload"
+    if (identical(source, "upload")) {
+      return(tagList(
+        fileInput("tx2gene_modal_file", "Upload tx2gene table", accept = c(".csv", ".tsv", ".txt")),
+        div(class = "muted", "First column: transcript ID. Second column: gene ID. A header row is recommended.")
+      ))
+    }
+    if (identical(source, "gtf")) {
+      attr_df <- rv$tx2gene_gtf_attributes
+      attr_cols <- if (is.null(attr_df)) character() else setdiff(names(attr_df), ".row_id")
+      transcript_default <- intersect(c("transcript_id", "transcript", "transcript_name", "protein_id", "ID"), attr_cols)
+      gene_default <- intersect(c("gene_id", "gene", "gene_name", "locus_tag", "Parent"), attr_cols)
+      return(tagList(
+        fileInput("tx2gene_gtf_file", "Upload GTF/GFF file", accept = c(".gtf", ".gff", ".gff3", ".gtf.gz", ".gff.gz", ".gff3.gz")),
+        div(class = "muted", rv$tx2gene_gtf_status %||% "Upload a GTF/GFF file, then choose the transcript and gene ID attributes (can take a while)."),
+        if (length(attr_cols) > 0) tagList(
+          selectInput("tx2gene_gtf_transcript_col", "Transcript ID attribute", choices = attr_cols,
+                      selected = if (length(transcript_default)) transcript_default[1] else attr_cols[1]),
+          selectInput("tx2gene_gtf_gene_col", "Gene ID attribute", choices = attr_cols,
+                      selected = if (length(gene_default)) gene_default[1] else attr_cols[min(2, length(attr_cols))]),
+          tags$hr(),
+          strong("Preview"),
+          div(class = "muted", "First rows of the tx2gene table that will be created from the selected attributes."),
+          tableOutput("tx2gene_gtf_preview")
+        )
+      ))
+    }
+    tagList(
+      div(class = "muted", "Creates `tx2gene` from transcript IDs in the selected quantification folder by removing the final `.number` suffix."),
+      div(class = "muted", "This is intended for Arabidopsis TAIR-style transcript IDs such as AT1G01010.1 → AT1G01010")
+    )
+  })
+
+  observeEvent(input$open_tx2gene_options, {
+    showModal(modalDialog(
+      title = "tx2gene options",
+      radioButtons(
+        "tx2gene_source",
+        "Source",
+        choices = c(
+          "Upload tx2gene table" = "upload",
+          "Build tx2gene from GTF/GFF" = "gtf",
+          "Arabidopsis TAIR-style: strip final .number" = "tair"
+        ),
+        selected = "upload"
+      ),
+      uiOutput("tx2gene_modal_body"),
+      size = "l",
+      easyClose = TRUE,
+      footer = tagList(
+        downloadButton("download_tx2gene_modal_table", "Download table", class = "btn-default"),
+        actionButton("apply_tx2gene_source", "Use tx2gene", class = "btn-primary"),
+        modalButton("Close")
+      )
+    ))
+  })
+
+  observeEvent(input$tx2gene_gtf_file, {
+    req(input$tx2gene_gtf_file$datapath)
+    rv$tx2gene_gtf_attributes <- NULL
+    rv$tx2gene_gtf_status <- "Loading GTF/GFF attributes..."
+    tryCatch({
+      load_gtf_attributes_for_tx2gene(input$tx2gene_gtf_file$datapath)
+    }, error = function(e) {
+      rv$tx2gene_gtf_status <- paste("GTF/GFF load error:", e$message)
+      showNotification(rv$tx2gene_gtf_status, type = "error", duration = 12)
+      append_log(rv$tx2gene_gtf_status)
+    })
+  })
+
+  output$tx2gene_gtf_preview <- renderTable({
+    head(current_tx2gene_modal_mapping("gtf")$tx2gene, 10)
+  }, striped = TRUE, bordered = TRUE, spacing = "s", width = "100%")
+
+  output$download_tx2gene_modal_table <- downloadHandler(
+    filename = function() {
+      mapping <- current_tx2gene_modal_mapping()
+      paste0("tx2gene_", safe_filename_part(mapping$filename, "table"), "_", format(Sys.Date(), "%Y%m%d"), ".csv")
+    },
+    content = function(file) {
+      mapping <- current_tx2gene_modal_mapping()
+      write.csv(mapping$tx2gene, file, row.names = FALSE)
+    }
+  )
+
+  observeEvent(input$apply_tx2gene_source, {
+    source <- input$tx2gene_source %||% "upload"
+    tryCatch({
+      mapping <- current_tx2gene_modal_mapping(source)
+      save_tx2gene_mapping(mapping$tx2gene, mapping$label)
+      removeModal()
+      showNotification(paste("Prepared", rv$tx2gene_label), type = "message", duration = 6)
+    }, error = function(e) {
+      showNotification(paste("tx2gene error:", e$message), type = "error", duration = 12)
+      append_log("tx2gene error:", e$message)
+    })
+  }, ignoreInit = TRUE)
+
   observeEvent(input$deseq_input_type, {
     rv$coldata <- NULL
+    rv$coldata_raw <- NULL
+    rv$coldata_condition_col <- NULL
+    rv$tx2gene_df <- NULL
+    rv$tx2gene_path <- NULL
+    rv$tx2gene_label <- NULL
   }, ignoreInit = TRUE)
 
   observeEvent(input$scan_rsem, {
     req(input$rsem_path)
-    append_log("Scanning RSEM folder:", input$rsem_path, level = "STEP")
-    tbl <- scan_rsem_files(input$rsem_path)
+    quant_type <- input$deseq_input_type %||% "rsem"
+    append_log("Scanning", quant_type, "folder:", input$rsem_path, level = "STEP")
+    rsem_tx_ids <- identical(quant_type, "rsem") && isTRUE(input$rsem_transcript_ids)
+    tbl <- scan_tximport_quant_files(input$rsem_path, quant_type = quant_type, rsem_tx_ids = rsem_tx_ids)
     if (nrow(tbl) == 0) {
-      showNotification("No .genes.results files found in this folder", type = "error")
-      append_log("No RSEM gene.results files found in", input$rsem_path)
+      expected_file <- switch(
+        quant_type,
+        rsem = if (isTRUE(rsem_tx_ids)) ".transcripts.results" else ".genes.results",
+        salmon = "quant.sf",
+        kallisto = "abundance.tsv",
+        ".genes.results"
+      )
+      showNotification(paste("No", expected_file, "files found in this folder"), type = "error")
+      append_log("No", quant_type, "quantification files found in", input$rsem_path)
       return()
     }
-    rv$coldata <- tbl[, c("sample_id", "condition", "sample_label")]
-    append_log("Scanned", nrow(tbl), "RSEM gene.results files.")
+    rv$coldata_raw <- tbl[, c("sample_id", "condition", "sample_label")]
+    apply_coldata_condition_col("condition")
+    append_log("Scanned", nrow(tbl), quant_type, "quantification files.")
   })
 
   observeEvent(input$scan_featurecounts, {
@@ -1764,7 +2162,8 @@ server <- function(input, output, session) {
         append_log("No featureCounts sample columns found in", input$featurecounts_file$name)
         return()
       }
-      rv$coldata <- tbl[, c("sample_id", "condition", "sample_label")]
+      rv$coldata_raw <- tbl[, c("sample_id", "condition", "sample_label")]
+      apply_coldata_condition_col("condition")
       append_log("Loaded", nrow(tbl), "featureCounts samples.")
     }, error = function(e) {
       showNotification(paste("featureCounts load error:", e$message), type = "error", duration = 12)
@@ -1772,13 +2171,31 @@ server <- function(input, output, session) {
     })
   })
 
+  observeEvent(input$scan_count_matrix, {
+    req(input$count_matrix_file$datapath)
+    append_log("Loading count matrix samples:", input$count_matrix_file$name, level = "STEP")
+    tryCatch({
+      tbl <- scan_count_matrix_file(input$count_matrix_file$datapath)
+      if (nrow(tbl) == 0) {
+        showNotification("No sample count columns found in this count matrix", type = "error")
+        append_log("No sample count columns found in", input$count_matrix_file$name)
+        return()
+      }
+      rv$coldata_raw <- tbl[, c("sample_id", "condition", "sample_label")]
+      apply_coldata_condition_col("condition")
+      append_log("Loaded", nrow(tbl), "count matrix samples.")
+    }, error = function(e) {
+      showNotification(paste("Count matrix load error:", e$message), type = "error", duration = 12)
+      append_log("Count matrix load error:", e$message)
+    })
+  })
+
   observeEvent(input$coldata_file, {
     req(input$coldata_file$datapath)
     append_log("Loading colData file:", input$coldata_file$name, level = "STEP")
-    cd <- read_any_table(input$coldata_file$datapath, source_name = input$coldata_file$name)
-    cd <- normalize_coldata(cd)
-    rv$coldata <- cd
-    append_log("Loaded colData with", nrow(cd), "samples.")
+    rv$coldata_raw <- read_any_table(input$coldata_file$datapath, source_name = input$coldata_file$name)
+    apply_coldata_condition_col(guess_coldata_condition_col(rv$coldata_raw))
+    append_log("Loaded colData with", nrow(rv$coldata), "samples. Condition column:", rv$coldata_condition_col)
   })
 
   observeEvent(input$show_coldata_example, {
@@ -1808,12 +2225,73 @@ server <- function(input, output, session) {
 
   output$coldata_table <- renderDT({
     req(rv$coldata)
-    datatable(rv$coldata, editable = TRUE, rownames = FALSE, options = list(pageLength = 12, scrollX = TRUE))
+    condition_cols <- coldata_condition_choices(rv$coldata_raw %||% rv$coldata)
+    selected_condition_col <- rv$coldata_condition_col
+    if (!is.null(selected_condition_col) && selected_condition_col %in% names(rv$coldata_raw %||% rv$coldata)) {
+      condition_cols <- unique(c(selected_condition_col, condition_cols))
+    }
+    if (is.null(selected_condition_col) || !selected_condition_col %in% condition_cols) {
+      selected_condition_col <- if (length(condition_cols)) condition_cols[1] else ""
+    }
+    datatable(
+      rv$coldata,
+      editable = TRUE,
+      rownames = FALSE,
+      options = list(
+        pageLength = 12,
+        scrollX = TRUE,
+        dom = '<"coldata-dt-top"<"coldata-condition-toolbar">f>rtip'
+      ),
+      callback = DT::JS(sprintf(
+        "
+        var conditionCols = %s;
+        var selectedCol = %s;
+        var toolbar = $(table.table().container()).find('div.coldata-condition-toolbar');
+        if (toolbar.length) {
+          toolbar.html('<div class=\"form-group\"><label for=\"coldata_condition_col\">Condition / group column</label><select id=\"coldata_condition_col\" class=\"form-control input-sm\"></select></div>');
+          var select = toolbar.find('select');
+          conditionCols.forEach(function(col) {
+            $('<option>').val(col).text(col).appendTo(select);
+          });
+          select.val(selectedCol);
+          select.on('change', function() {
+            if (window.Shiny) {
+              Shiny.setInputValue('coldata_condition_col', $(this).val(), {priority: 'event'});
+            }
+          });
+        }
+        ",
+        jsonlite::toJSON(condition_cols, auto_unbox = FALSE),
+        jsonlite::toJSON(selected_condition_col, auto_unbox = TRUE)
+      ))
+    )
   })
+
+  observeEvent(input$coldata_condition_col, {
+    req(rv$coldata_raw)
+    selected_col <- input$coldata_condition_col
+    if (is.null(selected_col) || !nzchar(selected_col)) return()
+    if (identical(selected_col, rv$coldata_condition_col)) return()
+    tryCatch({
+      apply_coldata_condition_col(selected_col)
+      append_log("Changed colData condition column to:", selected_col)
+    }, error = function(e) {
+      showNotification(paste("Condition column error:", e$message), type = "error", duration = 10)
+      append_log("Condition column error:", e$message)
+    })
+  }, ignoreInit = TRUE)
 
   observeEvent(input$coldata_table_cell_edit, {
     info <- input$coldata_table_cell_edit
     rv$coldata[info$row, info$col + 1] <- DT::coerceValue(info$value, rv$coldata[info$row, info$col + 1])
+    edited_col <- names(rv$coldata)[info$col + 1]
+    raw_col <- edited_col
+    if (identical(edited_col, "condition") && !is.null(rv$coldata_condition_col)) {
+      raw_col <- rv$coldata_condition_col
+    }
+    if (!is.null(rv$coldata_raw) && raw_col %in% names(rv$coldata_raw) && info$row <= nrow(rv$coldata_raw)) {
+      rv$coldata_raw[info$row, raw_col] <- DT::coerceValue(info$value, rv$coldata_raw[info$row, raw_col])
+    }
   })
 
   observeEvent(input$add_coldata_effect_col, {
@@ -1821,6 +2299,7 @@ server <- function(input, output, session) {
     new_col <- make.unique(c(names(rv$coldata), "effect"), sep = "_")
     new_col <- new_col[length(new_col)]
     rv$coldata[[new_col]] <- ""
+    if (!is.null(rv$coldata_raw)) rv$coldata_raw[[new_col]] <- ""
     append_log("Added editable colData column:", new_col)
   })
 
@@ -1914,9 +2393,25 @@ server <- function(input, output, session) {
         use_interaction = isTRUE(input$use_interaction) && !identical(input$effect_col, "condition"),
         all_vs_control = all_vs_control
       )
+    } else if (identical(deseq_input_type, "countmatrix")) {
+      run_deseq2_from_count_matrix(
+        counts_file = input$count_matrix_file$datapath,
+        coldata = coldata,
+        treatment = treatment,
+        control = control,
+        lfc_shrink = isTRUE(input$lfc_shrink),
+        min_count = input$min_count,
+        effect_col = if (!is.null(input$effect_col)) input$effect_col else "",
+        effect_level = if (!is.null(input$effect_level)) input$effect_level else "",
+        use_interaction = isTRUE(input$use_interaction) && !identical(input$effect_col, "condition"),
+        all_vs_control = all_vs_control
+      )
     } else {
       run_deseq2_from_rsem(
         folder = input$rsem_path,
+        quant_type = deseq_input_type,
+        tx2gene_file = if (current_input_needs_tx2gene(deseq_input_type)) rv$tx2gene_path else NULL,
+        rsem_tx_ids = identical(deseq_input_type, "rsem") && isTRUE(input$rsem_transcript_ids),
         coldata = coldata,
         treatment = treatment,
         control = control,
@@ -1958,15 +2453,18 @@ server <- function(input, output, session) {
     deseq_input_type <- input$deseq_input_type %||% "rsem"
     if (identical(deseq_input_type, "featurecounts")) {
       req(input$featurecounts_file$datapath)
+    } else if (identical(deseq_input_type, "countmatrix")) {
+      req(input$count_matrix_file$datapath)
     } else {
       req(input$rsem_path)
+      if (current_input_needs_tx2gene(deseq_input_type)) req(rv$tx2gene_path)
     }
     append_log("Running DESeq2", paste0("(", deseq_input_type, "):"), input$treatment, "vs", input$control, level = "STEP")
     withProgress(message = "Running DESeq2", value = 0.1, {
       tryCatch({
         incProgress(0.2, detail = "Subsetting to comparison samples")
         de_coldata <- comparison_coldata(rv$coldata, input$treatment, input$control)
-        incProgress(0.2, detail = if (identical(deseq_input_type, "featurecounts")) "Importing featureCounts matrix" else "Importing RSEM files")
+        incProgress(0.2, detail = if (identical(deseq_input_type, "featurecounts")) "Importing featureCounts matrix" else paste("Importing", deseq_input_type, "files"))
         res <- run_deseq_for_current_input(
           coldata = de_coldata,
           treatment = input$treatment,
@@ -1998,8 +2496,11 @@ server <- function(input, output, session) {
     deseq_input_type <- input$deseq_input_type %||% "rsem"
     if (identical(deseq_input_type, "featurecounts")) {
       req(input$featurecounts_file$datapath)
+    } else if (identical(deseq_input_type, "countmatrix")) {
+      req(input$count_matrix_file$datapath)
     } else {
       req(input$rsem_path)
+      if (current_input_needs_tx2gene(deseq_input_type)) req(rv$tx2gene_path)
     }
     append_log("Running all-sample PCA/Venn vs", input$control, level = "STEP")
     withProgress(message = "Running PCA/Venn", value = 0.1, {
@@ -2841,7 +3342,7 @@ server <- function(input, output, session) {
   }, width = function() input$de_plot_width, height = function() input$de_plot_height)
   output$ma_message <- renderText({
     if (is.null(rv$de)) return("")
-    if (!"baseMean" %in% names(rv$de)) "MA plot requires baseMean. Run DESeq2 from RSEM files or upload a DE table containing baseMean." else ""
+    if (!"baseMean" %in% names(rv$de)) "MA plot requires baseMean. Run DESeq2 from quantification/count files or upload a DE table containing baseMean." else ""
   })
 
   # PCA conditions selector (default = treatment + control from DESeq2 run)
@@ -2869,7 +3370,7 @@ server <- function(input, output, session) {
   })
   output$pca_plot <- renderPlot({
     if (is.null(rv$pca)) {
-      plot.new(); text(0.5, 0.5, "PCA requires expression/count data. Run DESeq2 from RSEM files.", cex = 1.1)
+      plot.new(); text(0.5, 0.5, "PCA requires expression/count data. Run DESeq2 from quantification/count files.", cex = 1.1)
     } else pca_reactive()
   }, width = function() input$de_plot_width, height = function() input$de_plot_height)
   output$pca_message <- renderText({
@@ -2881,7 +3382,13 @@ server <- function(input, output, session) {
     append_log("Running GO enrichment for", input$go_direction, "genes", level = "STEP")
     withProgress(message = "Running GO enrichment", value = 0.2, {
       tryCatch({
-        incProgress(0.2, detail = "GO enrichment")
+        incProgress(0.15, detail = "Checking selected OrgDb package")
+        orgdb <- input$go_orgdb %||% "org.At.tair.db"
+        if (!ensure_orgdb_installed(orgdb)) {
+          stop("Could not install or load required OrgDb package: ", orgdb)
+        }
+        rv$selected_go_available <- TRUE
+        incProgress(0.05, detail = "GO enrichment")
         g <- compute_go_cached(input$go_direction)  # stores all terms in cache
         rv$go_trigger <- rv$go_trigger + 1
         append_log("GO enrichment done for", input$go_direction, "genes:", nrow(g), "total terms (filtering by p-value on display).")
@@ -3569,6 +4076,32 @@ server <- function(input, output, session) {
     }
   }, width = function() input$go_plot_width, height = function() input$go_plot_height)
   # ---- TE Analysis -------------------------------------------------------
+  te_volcano_default_superfamilies <- function() {
+    d <- rv$te_enrichment
+    if (!is.null(d) && nrow(d) > 0 && "superfamily" %in% names(d)) {
+      top <- unique(as.character(d$superfamily))
+      top <- top[!is.na(top) & nzchar(top)]
+      top <- intersect(top, te_super_family_choices)
+      if (length(top) > 0) return(head(top, 3))
+    }
+    head(te_super_family_choices, 3)
+  }
+
+  output$te_super_families_ui <- renderUI({
+    selected <- input$te_super_families
+    if (is.null(selected) || length(selected) == 0) {
+      selected <- te_volcano_default_superfamilies()
+    }
+    selectizeInput(
+      "te_super_families",
+      "TE super-families",
+      choices = te_super_family_choices,
+      selected = selected,
+      multiple = TRUE,
+      options = list(placeholder = "Type to search super-families", create = FALSE)
+    )
+  })
+
   observeEvent(input$run_te_enrich, {
     req(rv$de)
     append_log("Running TE superfamily enrichment", level = "STEP")
@@ -3576,6 +4109,7 @@ server <- function(input, output, session) {
       tryCatch({
         res <- run_te_enrichment(rv$de, pvalue_cutoff = input$te_enrich_pvalue)
         rv$te_enrichment <- res
+        updateSelectizeInput(session, "te_super_families", selected = te_volcano_default_superfamilies())
         
         incProgress(0.5, detail = "Generating Plot")
         rv$te_enrich_bubble <- NULL
@@ -3628,7 +4162,8 @@ server <- function(input, output, session) {
           point_size = input$plot_point_size,
           point_alpha = input$plot_alpha,
           plot_theme = input$plot_theme %||% "classic",
-          font_family = input$plot_font_family %||% "serif"
+          font_family = input$plot_font_family %||% "serif",
+          color_palette = input$te_color_palette %||% "default"
         )
         rv$te_volcano <- out$data
         rv$te_volcano_plot <- out$plot
@@ -3650,7 +4185,8 @@ server <- function(input, output, session) {
       point_size = input$plot_point_size,
       point_alpha = input$plot_alpha,
       plot_theme = input$plot_theme %||% "classic",
-      font_family = input$plot_font_family %||% "serif"
+      font_family = input$plot_font_family %||% "serif",
+      color_palette = input$te_color_palette %||% "default"
     )
   })
 
