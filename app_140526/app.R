@@ -1397,6 +1397,7 @@ server <- function(input, output, session) {
     de_design_formula = NULL,
     de_contrast = NULL,
     deseq_all_comparisons = NULL,
+    venn_direction_filters = list(),
     go_trigger = 0,
     offspring = NULL,
     stress = NULL,
@@ -2444,6 +2445,7 @@ server <- function(input, output, session) {
       rv$de_design_formula <- NULL
       rv$de_contrast <- NULL
       rv$deseq_all_comparisons <- NULL
+      rv$venn_direction_filters <- list()
       clear_analysis_results()
     }
   })
@@ -2481,6 +2483,7 @@ server <- function(input, output, session) {
         rv$de_design_formula <- res$design_formula
         rv$de_contrast <- res$contrast
         rv$deseq_all_comparisons <- NULL
+        rv$venn_direction_filters <- list()
         clear_analysis_results()
         append_log("DESeq2 finished on comparison samples only:", input$treatment, "vs", input$control, "with", nrow(rv$de), "tested genes.")
         # updateTabsetPanel(session, "tabs", selected = "DE results")
@@ -2539,9 +2542,11 @@ server <- function(input, output, session) {
             comparisons = comparison_levels,
             tables = comparison_tables
           )
+          rv$venn_direction_filters <- stats::setNames(rep("all", length(comparison_tables)), names(comparison_tables))
           append_log("PCA/Venn finished with", length(comparison_tables), "separate pairwise comparisons. Main DE result was not changed.")
         } else {
           rv$deseq_all_comparisons <- all_res$all_comparisons
+          rv$venn_direction_filters <- stats::setNames(rep("all", length(all_res$all_comparisons$tables %||% list())), names(all_res$all_comparisons$tables %||% list()))
           append_log("PCA/Venn finished with one all-sample DESeq2 run. Main DE result was not changed.")
         }
       }, error = function(e) {
@@ -2606,6 +2611,7 @@ server <- function(input, output, session) {
             multiple = TRUE,
             options = list(maxItems = 5, plugins = list("remove_button"))
           ),
+          actionButton("open_venn_direction_settings", "Direction filtering", class = "btn-link"),
           selectInput("venn_color_palette", "Venn color set",
             choices = c(
               "Default" = "default",
@@ -2644,9 +2650,16 @@ server <- function(input, output, session) {
       selected <- head(comparison_names, 4)
     }
     selected <- intersect(selected, comparison_names)
+    filters <- current_venn_direction_filters()
+    selected_filters <- vapply(selected, function(comparison) filters[[comparison]] %||% "all", character(1))
+    filter_text <- if (length(selected_filters) > 0) {
+      paste0(" Direction filters: ", paste(paste0(comparison_display_label(names(selected_filters)), " = ", selected_filters), collapse = "; "), ".")
+    } else {
+      ""
+    }
     div(class = "muted",
       paste0("Showing ", length(selected), " of ", length(comparison_names), " comparison",
-        ifelse(length(comparison_names) == 1, "", "s"), " vs control. Default starts with 4; select up to 5 comparisons.")
+        ifelse(length(comparison_names) == 1, "", "s"), " vs control. Default starts with 4; select up to 5 comparisons.", filter_text)
     )
   })
 
@@ -2660,6 +2673,52 @@ server <- function(input, output, session) {
     head(intersect(selected, comparison_names), 5)
   })
 
+  current_venn_direction_filters <- function() {
+    req(rv$deseq_all_comparisons)
+    comparison_names <- names(rv$deseq_all_comparisons$tables %||% list())
+    filters <- rv$venn_direction_filters %||% list()
+    out <- vapply(comparison_names, function(comparison) {
+      value <- filters[[comparison]] %||% "all"
+      if (value %in% c("all", "up", "down")) value else "all"
+    }, character(1))
+    stats::setNames(as.list(out), comparison_names)
+  }
+
+  observeEvent(input$open_venn_direction_settings, {
+    req(rv$deseq_all_comparisons)
+    comparison_names <- names(rv$deseq_all_comparisons$tables %||% list())
+    filters <- current_venn_direction_filters()
+    showModal(modalDialog(
+      title = "DE direction filtering",
+      div(class = "muted", "Choose which significant genes to include in each comparison set before drawing the Venn diagram."),
+      tags$hr(),
+      tagList(lapply(seq_along(comparison_names), function(i) {
+        comparison <- comparison_names[[i]]
+        selectInput(
+          paste0("venn_direction_", i),
+          comparison_display_label(comparison),
+          choices = c("All significant" = "all", "Up-regulated only" = "up", "Down-regulated only" = "down"),
+          selected = filters[[comparison]] %||% "all"
+        )
+      })),
+      size = "m",
+      easyClose = TRUE,
+      footer = tagList(
+        actionButton("apply_venn_direction_settings", "Apply", class = "btn-primary"),
+        modalButton("Close")
+      )
+    ))
+  })
+
+  observeEvent(input$apply_venn_direction_settings, {
+    req(rv$deseq_all_comparisons)
+    comparison_names <- names(rv$deseq_all_comparisons$tables %||% list())
+    rv$venn_direction_filters <- stats::setNames(lapply(seq_along(comparison_names), function(i) {
+      input[[paste0("venn_direction_", i)]] %||% "all"
+    }), comparison_names)
+    removeModal()
+  })
+
   venn_intersection_table <- reactive({
     req(rv$deseq_all_comparisons)
     selected <- selected_venn_comparisons()
@@ -2668,7 +2727,8 @@ server <- function(input, output, session) {
     sig_sets <- deseq_comparison_significant_sets(
       rv$deseq_all_comparisons,
       alpha = input$alpha,
-      lfc_cutoff = input$lfc_cutoff
+      lfc_cutoff = input$lfc_cutoff,
+      direction_filters = current_venn_direction_filters()
     )
     sig_sets <- sig_sets[selected]
     shared <- Reduce(intersect, sig_sets)
@@ -2698,7 +2758,7 @@ server <- function(input, output, session) {
     showModal(modalDialog(
       title = title,
       div(class = "muted",
-        "Genes shown are significant in all selected Venn comparisons using the current padj and |log2FC| thresholds."
+        "Genes shown pass the selected direction filter in all selected Venn comparisons using the current padj and |log2FC| thresholds."
       ),
       br(),
       DTOutput("venn_intersection_table"),
@@ -2718,7 +2778,8 @@ server <- function(input, output, session) {
     sig_sets <- deseq_comparison_significant_sets(
       rv$deseq_all_comparisons,
       alpha = input$alpha,
-      lfc_cutoff = input$lfc_cutoff
+      lfc_cutoff = input$lfc_cutoff,
+      direction_filters = current_venn_direction_filters()
     )
     selected_comparisons <- input$venn_comparisons
     if (!is.null(selected_comparisons) && length(selected_comparisons) > 0) {

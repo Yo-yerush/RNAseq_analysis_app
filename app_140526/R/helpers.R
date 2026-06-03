@@ -1226,14 +1226,18 @@ run_deseq2_from_count_matrix <- function(counts_file, coldata, treatment, contro
   )
 }
 
-deseq_comparison_significant_sets <- function(all_comparisons, alpha = 0.05, lfc_cutoff = 1) {
+deseq_comparison_significant_sets <- function(all_comparisons, alpha = 0.05, lfc_cutoff = 1,
+                                             direction_filters = NULL) {
   if (is.null(all_comparisons) || is.null(all_comparisons$tables) || length(all_comparisons$tables) == 0) {
     return(list())
   }
-  lapply(all_comparisons$tables, function(tbl) {
+  Map(function(tbl, comparison_name) {
+    direction <- direction_filters[[comparison_name]] %||% "all"
+    if (!direction %in% c("all", "up", "down")) direction <- "all"
     tbl <- classify_de(tbl, alpha = alpha, lfc_cutoff = lfc_cutoff)
-    sort(unique(tbl$gene_id[tbl$DE_class %in% c("up", "down")]))
-  })
+    classes <- if (identical(direction, "all")) c("up", "down") else direction
+    sort(unique(tbl$gene_id[tbl$DE_class %in% classes]))
+  }, all_comparisons$tables, names(all_comparisons$tables))
 }
 
 make_comparison_venn_plot <- function(sig_sets, max_sets = 5, title = "Shared significant genes",
