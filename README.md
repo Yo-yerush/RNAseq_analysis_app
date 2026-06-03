@@ -35,7 +35,7 @@ Must include columns:
 | `log2FoldChange` | log2 fold change |
 | `padj` | adjusted p-value |
 
-If standard column names are not found, the app treats the first three columns as `gene_id`, `log2FoldChange`, and `padj`.
+If standard s are not found, the app treats the first three columns as `gene_id`, `log2FoldChange`, and `padj`.
 
 After loading the table, the app auto-detects common `gene_id` formats such as TAIR, Ensembl, RefSeq, Entrez, UniProt, and gene symbols, then updates the Gene ID type in the Organism annotations tab. You can still change it manually.
 
@@ -58,7 +58,7 @@ colData supports CSV, TSV, TXT, XLS, and XLSX files. Text files can use comma or
 
 Supported column patterns:
 
-| Column name | Column positions options | Is unique? |
+| Column | Column positions options | Is unique? |
 |----------|--------------|--------------|
 | `sample_id` | `1st` / `2nd` | Yes |
 | `condition` | `1st` / `2nd` / `3rd` | No |
