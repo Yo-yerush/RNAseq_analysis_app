@@ -1,4 +1,4 @@
-# ╭╯RNA-seq Analysis Dashboard
+# RNA-seq Analysis Dashboard
 
 A local R Shiny dashboard for RNA-seq differential expression analysis, count/quantification import, annotation building, dependency checks, and downstream visualization.
 
