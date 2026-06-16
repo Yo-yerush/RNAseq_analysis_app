@@ -287,3 +287,51 @@ plot_te_enrichment <- function(te_res_df, p_value_threshold = 0.05,
     return(down_plot)
   }
 }
+
+plot_te_enrichment_direction <- function(te_res_df, direction = c("up", "down", "all"),
+                                         p_value_threshold = 0.05,
+                                         color_up = "#B2182B", color_down = "#2166AC",
+                                         color_all = "#e6ac6a",
+                                         top_n = 20,
+                                         plot_theme = "classic", font_family = "serif") {
+  direction <- match.arg(direction)
+  if (is.null(te_res_df) || nrow(te_res_df) == 0) return(NULL)
+
+  count_col <- switch(
+    direction,
+    up = "Upregulated",
+    down = "Downregulated",
+    all = "Significant"
+  )
+  title <- switch(
+    direction,
+    up = "Upregulated TEGs",
+    down = "Downregulated TEGs",
+    all = "All DE TEGs"
+  )
+  point_color <- switch(
+    direction,
+    up = color_up,
+    down = color_down,
+    all = color_all
+  )
+
+  plot_df <- te_res_df[te_res_df$p.value <= p_value_threshold & te_res_df[[count_col]] > 0, , drop = FALSE]
+  if (nrow(plot_df) == 0) return(NULL)
+  plot_df <- plot_df[order(plot_df$p.value, -plot_df[[count_col]], na.last = TRUE), , drop = FALSE]
+  top_n <- suppressWarnings(as.integer(top_n %||% 20))
+  if (!is.finite(top_n) || is.na(top_n) || top_n < 1) top_n <- 20
+  plot_df <- head(plot_df, top_n)
+  plot_df$count_value <- plot_df[[count_col]]
+
+  ggplot(plot_df, aes(x = count_value, y = reorder(superfamily, count_value), color = p.value, size = Annotated)) +
+    geom_point(alpha = 0.9) +
+    scale_color_gradient("p.value", low = point_color, high = "#979797") +
+    plot_theme_choice(plot_theme, base_size = 12, font_family = font_family) +
+    theme(
+      legend.key.size = unit(0.25, "cm"),
+      legend.title = element_text(size = 9.5)
+    ) +
+    labs(title = title, x = "Significant genes", y = "") +
+    guides(color = guide_colorbar(order = 1, barheight = 4))
+}

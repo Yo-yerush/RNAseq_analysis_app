@@ -15,7 +15,7 @@ suppressPackageStartupMessages({
   })
 })
 
-# Allow large annotation uploads, including compressed RefSeq GTF files.
+# Allow large annotation uploads, including compressed RefSeq GTF/GFF3 files.
 options(shiny.maxRequestSize = 500 * 1024^2)
 
 source(file.path("R", "opening_yo.R"), local = TRUE)
@@ -166,8 +166,8 @@ dependency_catalog <- data.frame(
     "Optional HGNC/human gene-family ID mapping fallback.",
     "Color palettes for plots and REVIGO-like views.",
     "Heatmap support for legacy/helper workflows.",
-    "Faster RefSeq GTF attribute parsing when available.",
-    "Faster RefSeq GTF table building when available.",
+    "Faster RefSeq GTF/GFF3 attribute parsing when available.",
+    "Faster RefSeq GTF/GFF3 table building when available.",
     "Optional side-by-side plot composition in legacy helpers.",
     "Fallback side-by-side plot composition in legacy helpers.",
     "Optional VennDiagram message suppression."
@@ -203,8 +203,8 @@ dependency_catalog <- data.frame(
     "Some human gene-family mapping fallbacks will be unavailable.",
     "Some palette choices may fail.",
     "Legacy/helper heatmaps may fail.",
-    "RefSeq GTF parsing falls back to base R and may be slower.",
-    "RefSeq GTF table building falls back to base R and may be slower.",
+    "RefSeq GTF/GFF3 parsing falls back to base R and may be slower.",
+    "RefSeq GTF/GFF3 table building falls back to base R and may be slower.",
     "Some side-by-side legacy plots will not combine.",
     "Fallback side-by-side legacy plots will not combine.",
     "VennDiagram may print extra messages."
@@ -507,18 +507,54 @@ ui <- fluidPage(
     .coldata-dt-top .dataTables_filter { margin-left: auto; }
   ")),
   tags$head(
-    tags$style(HTML("\n    .app-title { margin-top: 10px; margin-bottom: 4px; font-weight: 700; }\n    .muted { color: #666; font-size: 0.92em; }\n    .tab-content { padding: 16px; border: 1px solid #ddd; border-top: none; }\n    .download-row .btn { margin-right: 8px; margin-top: 6px; }\n    .annotation-input-row { display: flex; align-items: stretch; }\n    .annotation-input-row > [class*='col-'] { display: flex; }\n    .annotation-input-row .well { flex: 1; width: 100%; }\n    pre { white-space: pre-wrap; }\n    table.dataTable tbody td { padding-top: 1.5px; padding-bottom: 1.5px; line-height: 1.25; }\n    #settings_toggle_btn { margin: 4px 0 10px 0; }\n    body.settings-hidden #settings_sidebar { display: none; }\n    body.settings-hidden #main_content { width: 100%; }\n    .row-detail-modal { max-height: 70vh; overflow-y: auto; }\n    .row-detail-table th { width: 190px; vertical-align: top; white-space: nowrap; }\n    .row-detail-table td { white-space: pre-wrap; word-break: break-word; }\n  ")),
-    tags$script(HTML("\n      $(document).on('click', '#settings_toggle_btn', function() {\n        var hidden = !$('body').hasClass('settings-hidden');\n        $('body').toggleClass('settings-hidden', hidden);\n        $(this).text(hidden ? '☰ ►' : '◄ ☰');\n      });\n    "))
+    tags$style(HTML("
+      .app-title { margin-top: 10px; margin-bottom: 4px; font-weight: 700; }
+      .muted { color: #666; font-size: 0.92em; }
+      .tab-content { padding: 16px; border: 1px solid #ddd; border-top: none; }
+      .download-row .btn { margin-right: 8px; margin-top: 6px; }
+      .annotation-input-row { display: flex; align-items: stretch; }
+      .annotation-input-row > [class*='col-'] { display: flex; }
+      .annotation-input-row .well { flex: 1; width: 100%; }
+      pre { white-space: pre-wrap; }
+      table.dataTable tbody td { padding-top: 1.5px; padding-bottom: 1.5px; line-height: 1.25; }
+
+      #settings_toggle_btn {
+        margin: 4px 0 10px 0;
+        padding: 0 4px;
+        margin-left: 315px;
+        font-size: 10px;
+        line-height: 0.5;
+        height: 16px;
+        min-height: 16px;
+        transition: all 0.2s ease;
+      }
+
+      body.settings-hidden #settings_sidebar { display: none; }
+      body.settings-hidden #settings_toggle_btn { margin-left: 0px; }
+      body.settings-hidden #main_content { width: 100%; }
+      .row-detail-modal { max-height: 70vh; overflow-y: auto; }
+      .row-detail-table th { width: 190px; vertical-align: top; white-space: nowrap; }
+      .row-detail-table td { white-space: pre-wrap; word-break: break-word; }
+    ")),
+    tags$script(HTML("
+      $(document).on('click', '#settings_toggle_btn', function() {
+        var hidden = !$('body').hasClass('settings-hidden');
+        $('body').toggleClass('settings-hidden', hidden);
+        $(this).text(hidden ? '☰ ►' : '◄ ☰');
+      });
+    "))
   ),
 
   # Add the theme selector if shinythemes is installed (for easy testing of themes)
   # if (requireNamespace("shinythemes", quietly = TRUE)) shinythemes::themeSelector(),
 
-  titlePanel(div(class = "app-title", "RNA-seq Analysis Dashboard")),
-  div(class = "muted", "Load DE results directly, or run DESeq2 from RSEM, Salmon, Kallisto, or featureCounts output."),
-  br(),
+  titlePanel(div(class = "app-title", style = "margin-left: -12px;", tags$a(href = "https://github.com/Yo-yerush/RNAseq_analysis_app", target = "_blank", "╭╯"), "RNA-seq Analysis Dashboard", )),
+  # div(class = "muted", style = "margin-left: 68px;", "By Yonatan Yerushalmy • Rachel Amir's group"),
+  # div(class = "muted", style = "margin-left: 12px;", "By Yonatan Yerushalmy • Rachel Amir's group"),
+  div(class = "muted", style = "margin-left: 0px; margin-bottom: -16px;", "By Yonatan Yerushalmy • Rachel Amir's group"),
+  tags$hr(),
   div(
-    style = "text-align: left;",
+    style = "margin-top: -20px; margin-bottom: -6px;", # margin-left: left; 
     tags$button(
       id = "settings_toggle_btn",
       type = "button",
@@ -526,9 +562,8 @@ ui <- fluidPage(
       "◄ ☰"
     )
   ),
-
   sidebarLayout(
-    sidebarPanel(id = "settings_sidebar", width = 3,
+    sidebarPanel(id = "settings_sidebar", width = 2,
       conditionalPanel("input.tabs == 'Data input'",
         h4("Data input"),
         div(style = "display: flex; align-items: flex-start; gap: 6px;",
@@ -695,11 +730,11 @@ ui <- fluidPage(
         sliderInput("msigdb_plot_height", "Plot height (px)", min = 200, max = 1200, value = 400, step = 50)
       ),
       conditionalPanel("input.tabs == 'TE analysis (At)'",
-        sliderInput("teg_plot_width",  "Plot width (px)",  min = 200, max = 1600, value = 550, step = 50),
-        sliderInput("teg_plot_height", "Plot height (px)", min = 100, max = 1200, value = 300, step = 50)
+        sliderInput("teg_plot_width",  "Plot width (px)",  min = 200, max = 1600, value = 350, step = 50),
+        sliderInput("teg_plot_height", "Plot height (px)", min = 100, max = 1200, value = 200, step = 50)
       ),
       conditionalPanel("input.tabs == 'Genes groups'",
-        sliderInput("grp_plot_width",  "Plot width (px)",  min = 200, max = 1600, value = 500, step = 50),
+        sliderInput("grp_plot_width",  "Plot width (px)",  min = 200, max = 1600, value = 450, step = 50),
         sliderInput("grp_plot_height", "Plot height (px)", min = 200, max = 1200, value = 200, step = 50)
       ),
       conditionalPanel("input.tabs == 'KEGG'",
@@ -759,6 +794,7 @@ ui <- fluidPage(
                       "Tableau" = "tableau",
                       "Viridis" = "viridis",
                       "Plasma" = "plasma",
+                      "Rainbow" = "rainbow",
                       "Pastel" = "pastel"
                     ),
                     selected = "default"
@@ -823,12 +859,12 @@ ui <- fluidPage(
             ),
             column(4,
               wellPanel(
-                h4("Build from RefSeq GTF"),
-                fileInput("refseq_gtf_file", "NCBI RefSeq GTF", accept = c(".gtf", ".gtf.gz")),
+                h4("Build from RefSeq GTF/GFF3"),
+                fileInput("refseq_gtf_file", "NCBI RefSeq GTF/GFF3", accept = c(".gtf", ".gff", ".gff3", ".gtf.gz", ".gff.gz", ".gff3.gz")),
                 uiOutput("refseq_gtf_id_source_ui"),
                 checkboxInput("refseq_gtf_one_row_per_id", "One annotation row per selected ID", value = TRUE),
                 textOutput("refseq_gtf_status"),
-                div(class = "muted", "Parses GTF attributes and db_xref IDs, then uses the selected source as the new gene_id column."),
+                div(class = "muted", "Parses GTF/GFF3 attributes and db_xref/Dbxref IDs, then uses the selected source as the new gene_id column."),
                 actionButton("build_refseq_gtf_annotations", "Build description file", class = "btn-success", style = "width:100%;")
               )
             )
@@ -1011,7 +1047,14 @@ ui <- fluidPage(
               fluidRow(
                 column(3, checkboxInput("revigo_show_labels", "Show parent labels", value = TRUE)),
                 column(3, numericInput("revigo_parent_label_count", "Parent labels to show", value = 8, min = 0, max = 100, step = 1)),
-                column(6, selectInput("revigo_color_palette", "REVIGO color set",
+                column(3, numericInput("revigo_parent_label_hjust", "Parent label hjust", value = 0, min = -3, max = 3, step = 0.1)),
+                column(3, numericInput("revigo_parent_label_nudge_x", "Parent label x offset", value = 0.15, min = -1, max = 2, step = 0.05))
+              ),
+              fluidRow(
+                column(3, numericInput("revigo_parent_label_segment_size", "Connector width", value = 0.3, min = 0, max = 2, step = 0.1)),
+                column(3, numericInput("revigo_parent_label_size", "Parent label size", value = 3, min = 1, max = 10, step = 0.25)),
+                column(3, checkboxInput("revigo_parent_label_colored", "Colored parent labels", value = FALSE)),
+                column(3, selectInput("revigo_color_palette", "REVIGO color set",
                   choices = c(
                     "Okabe-Ito" = "okabe_ito",
                     "Set 1" = "set1",
@@ -1021,6 +1064,7 @@ ui <- fluidPage(
                     "Tableau" = "tableau",
                     "Viridis" = "viridis",
                     "Plasma" = "plasma",
+                    "Rainbow" = "rainbow",
                     "Pastel" = "pastel"
                   ),
                   selected = "set1"
@@ -1247,7 +1291,79 @@ ui <- fluidPage(
 
         tabPanel("TE analysis (At)",
           tabsetPanel(
-            tabPanel("Enrichment Analysis",
+            tabPanel("Overlapped TEs",
+              wellPanel(
+                fluidRow(
+                  column(2, selectInput("te_overlap_region", "Gene region",
+                    choices = c(
+                      "Upstream" = "upstream",
+                      "Downstream" = "downstream",
+                      "Upstream + downstream" = "both",
+                      "Gene body" = "gene_body"
+                    ),
+                    selected = "upstream"
+                  )),
+                  column(2, numericInput("te_overlap_flank_bp", "Flank size (bp)", value = 2000, min = 0, step = 100)),
+                  column(2, selectInput("te_overlap_direction", "DEGs",
+                    choices = c("Up + down" = "all", "Up only" = "up", "Down only" = "down"),
+                    selected = "all"
+                  )),
+                  column(1, numericInput("te_overlap_top_n", "Top families", value = 10, min = 3, max = 100, step = 5)),
+                  column(3, br(), actionButton("run_te_overlap", "Find overlapped TEs", class = "btn-primary", style = "width:100%;"))
+                ),
+                div(class = "muted", "Uses current padj and |log2FC| thresholds, TAIR10 gene ranges, and TAIR10 TE ranges. Upstream/downstream are strand-aware."),
+                tags$hr(),
+                fluidRow(
+                  column(2, checkboxInput("te_overlap_include_tegs", "Include TEGs", value = TRUE)),
+                  column(3, div(class = "muted", style = "margin-top: 8px;",
+                    "When off, rows with type = 'transposable element gene' in TAIR gene ranges are excluded from this analysis."
+                  ))
+                )
+              ),
+              fluidRow(
+                column(4,
+                  h4("Overlapped genes volcano"),
+                  plotOutput("te_overlap_volcano", width = "auto", height = "auto"),
+                  selectizeInput(
+                    "te_overlap_volcano_families",
+                    "Filter volcano by TE family",
+                    choices = character(0),
+                    multiple = TRUE,
+                    options = list(placeholder = "All TE families")
+                  ),
+                  download_plot_ui("te_overlap_volcano", "Download overlap volcano")
+                ),
+                column(4,
+                  h4("Overlapped TE family counts"),
+                  plotOutput("te_overlap_family_plot", width = "auto", height = "auto"),
+                  download_plot_ui("te_overlap_family", "Download family-count plot"),
+                  div(class = "download-row", downloadButton("download_te_overlap_family_table", "Download family-count table"))
+                ),
+                column(4,
+                  h4("TE family enrichment"),
+                  plotOutput("te_overlap_enrichment_plot", width = "auto", height = "auto"),
+                  selectInput("te_overlap_enrichment_background", "Enrichment background",
+                    choices = c(
+                      "All TAIR10 TEs" = "all_tair10",
+                      "Region-aware TEs" = "region_aware"
+                    ),
+                    selected = "all_tair10"
+                  ),
+                  div(class = "muted", "Region-aware uses all TAIR10 TEs overlapping the same selected gene-region windows across all TAIR genes."),
+                  download_plot_ui("te_overlap_enrichment", "Download enrichment plot"),
+                  div(class = "download-row", downloadButton("download_te_overlap_enrichment_table", "Download enrichment table"))
+                )
+              ),
+              fluidRow(
+                column(12,
+                  tags$hr(),
+                  h4("Genes overlapped with TEs"),
+                  DTOutput("te_overlap_table"),
+                  div(class = "download-row", downloadButton("download_te_overlap_table", "Download overlap table"))
+                )
+              )
+            ),
+            tabPanel("TEGs Enrichment Analysis",
               wellPanel(
                 fluidRow(
                   column(4, numericInput("te_enrich_pvalue", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01)),
@@ -1256,10 +1372,24 @@ ui <- fluidPage(
                 )
               ),
               fluidRow(
+                column(4,
+                  h4("Upregulated TE superfamilies"),
+                  plotOutput("te_enrich_up_plot", width = "auto", height = "auto"),
+                  download_plot_ui("te_enrich_up", "Download Up Plot")
+                ),
+                column(4,
+                  h4("Downregulated TE superfamilies"),
+                  plotOutput("te_enrich_down_plot", width = "auto", height = "auto"),
+                  download_plot_ui("te_enrich_down", "Download Down Plot")
+                ),
+                column(4,
+                  h4("All DE TE superfamilies"),
+                  plotOutput("te_enrich_all_plot", width = "auto", height = "auto"),
+                  download_plot_ui("te_enrich_all", "Download All Plot")
+                )
+              ),
+              fluidRow(
                 column(12,
-                  h4("TE Superfamily Enrichment Plot"),
-                  plotOutput("te_enrich_bubble", width = "auto", height = "auto"),
-                  download_plot_ui("te_enrich_bubble", "Download Enrichment Plot"),
                   tags$hr(),
                   h4("Enriched Superfamilies Table"),
                   DTOutput("te_enrich_table"),
@@ -1267,7 +1397,7 @@ ui <- fluidPage(
                 )
               )
             ),
-            tabPanel("Volcano Plot",
+            tabPanel("TEGs Volcano Plot",
               wellPanel(
                 fluidRow(
                   column(4, uiOutput("te_super_families_ui")),
@@ -1297,6 +1427,7 @@ ui <- fluidPage(
                         "Tableau" = "tableau",
                         "Viridis" = "viridis",
                         "Plasma" = "plasma",
+                        "Rainbow" = "rainbow",
                         "Pastel" = "pastel"
                       ),
                       selected = "default"
@@ -1348,25 +1479,25 @@ ui <- fluidPage(
                 tags$li(strong("KEGG analysis: "), "Downloads/caches KEGG pathways by KEGG organism code. If needed, the app maps the selected Gene ID type to KEGG-compatible Entrez IDs through the selected OrgDb. Pathview uses the same mapping to color pathway genes by log2FC."),
                 tags$li(strong("PMN analysis: "), "Runs Plant Metabolic Network pathway enrichment for plant Cyc databases such as AraCyc, OryzaCyc, CornCyc, and TomatoCyc. The app auto-selects a PMN database when the selected organism is mapped; otherwise select or type a Cyc database manually."),
                 tags$li(strong("MSigDB/Hallmark: "), "Runs Hallmark over-representation analysis with ", code("msigdbr"), ". The run button appears only for species available in MSigDB."),
-                tags$li(strong("TE analysis: "), "Uses the bundled Arabidopsis TAIR/Methylome TE annotation files for TE superfamily enrichment and TE volcano plots. Other organisms require compatible TE-level annotations."),
+                tags$li(strong("TE analysis: "), "Arabidopsis-only TE workflows use TAIR10 TE metadata and TAIR gene ranges. The TEG tabs run TE superfamily enrichment and TEG volcano plots. The Overlapped TEs tab finds DE genes with nearby or gene-body TE overlaps, shows an overlapped-gene volcano, TE family counts, and Fisher-test TE family enrichment using either all TAIR10 TEs or region-aware TEs as background."),
                 tags$li(strong("Genes groups: "), "Gene-family analysis is available for Arabidopsis and human only. Arabidopsis uses the RA lab family file; human uses HGNC family tables after mapping the current Gene ID type to ", code("hgnc_id"), ". The Gene families sub-tab builds selected-family volcano plots and tables, and Gene families - enrichment runs top family enrichment dotplots."),
                 tags$li(strong("Downloads: "), "No plots or tables are saved automatically. Use the download buttons on each tab.")
-              ),
-              tags$hr(),
-              h4("AI Developer Instructions"),
-              div(class = "muted", "Copy/paste these instructions into an AI coding tool when adding features or debugging this app:"),
-              tags$ul(
-                tags$li(strong("Start here: "), "Read ", code("app_140526/app.R"), ", ", code("app_140526/R/helpers.R"), ", ", code("app_140526/R/build_uniprot_description_file.R"), " and any relevant file in ", code("app_140526/legacy_scripts/"), ". Preserve existing Shiny patterns instead of redesigning the app."),
-                tags$li(strong("App structure: "), code("app.R"), " contains UI, server reactives, observers, downloads, and the shared ", code("rv <- reactiveValues(...)"), " state. Put large reusable analysis functions in ", code("R/helpers.R"), " or a focused script under ", code("legacy_scripts/"), " and source it from ", code("app.R"), "."),
-                tags$li(strong("Standard data contract: "), "Most features expect a DE table with ", code("gene_id"), ", ", code("log2FoldChange"), ", ", code("padj"), ", optional ", code("pValue"), " and optional ", code("baseMean"), ". Use ", code("read_any_table()"), ", ", code("standardize_de_table()"), ", ", code("normalize_annotation_table()"), " and ", code("merge_with_description()"), " instead of ad hoc parsing."),
-                tags$li(strong("Organism and ID mapping: "), "Use the selected ", code("input$go_keytype"), ", ", code("input$go_orgdb"), ", ", code("input$kegg_species"), " and ", code("input$pmn_cyc_db"), " for organism-aware analyses. For KEGG/Pathview, use ", code("map_de_ids_for_kegg()"), " so Ensembl/SYMBOL IDs are converted to KEGG-compatible IDs. For PMN, use the organism locus IDs expected by the selected Cyc database."),
-                tags$li(strong("Adding a new analysis tab: "), "Add a ", code("tabPanel()"), " in the main ", code("tabsetPanel(id = 'tabs')"), ", add tab-specific sidebar controls with ", code("conditionalPanel(\"input.tabs == 'Tab name'\", ...)"), ", add result objects to ", code("rv"), ", clear them in ", code("clear_analysis_results()"), ", and add table/plot/download outputs."),
-                tags$li(strong("Run workflow pattern: "), "Use ", code("observeEvent(input$run_x, { withProgress(... tryCatch(...)) })"), ". On success, store raw tables and plots in ", code("rv"), " and call ", code("append_log()"), ". On failure, use ", code("showNotification(e$message, type = 'error')"), " and also log the error."),
-                tags$li(strong("Plot downloads: "), "For ggplot outputs, expose a reactive plot object and connect it with ", code("download_plot_ui()"), " in the UI and ", code("download_plot_server()"), " in the server. Keep plot width/height controls tab-specific where possible."),
-                tags$li(strong("File downloads: "), "Use safe, informative filenames. For organism-specific files use ", code("safe_filename_part()"), " and include organism name/tax ID when relevant."),
-                tags$li(strong("Testing after edits: "), "At minimum run ", code("Rscript -e \"parse('app_140526/app.R')\""), " and source any changed helper scripts. For mapping changes, test a small known ID example, such as human ", code("ENSG00000141510"), " mapping to Entrez ", code("7157"), " or UniProt ", code("P04637"), "."),
-                tags$li(strong("Do not break existing behavior: "), "Keep Arabidopsis TAIR workflows working while adding human/other organism support. Avoid changing input IDs unless all server references are updated.")
-              )
+              ) # ,
+              # tags$hr(),
+              # h4("AI Developer Instructions"),
+              # div(class = "muted", "Copy/paste these instructions into an AI coding tool when adding features or debugging this app:"),
+              # tags$ul(
+              #   tags$li(strong("Start here: "), "Read ", code("app_140526/app.R"), ", ", code("app_140526/R/helpers.R"), ", ", code("app_140526/R/build_uniprot_description_file.R"), " and any relevant file in ", code("app_140526/legacy_scripts/"), ". Preserve existing Shiny patterns instead of redesigning the app."),
+              #   tags$li(strong("App structure: "), code("app.R"), " contains UI, server reactives, observers, downloads, and the shared ", code("rv <- reactiveValues(...)"), " state. Put large reusable analysis functions in ", code("R/helpers.R"), " or a focused script under ", code("legacy_scripts/"), " and source it from ", code("app.R"), "."),
+              #   tags$li(strong("Standard data contract: "), "Most features expect a DE table with ", code("gene_id"), ", ", code("log2FoldChange"), ", ", code("padj"), ", optional ", code("pValue"), " and optional ", code("baseMean"), ". Use ", code("read_any_table()"), ", ", code("standardize_de_table()"), ", ", code("normalize_annotation_table()"), " and ", code("merge_with_description()"), " instead of ad hoc parsing."),
+              #   tags$li(strong("Organism and ID mapping: "), "Use the selected ", code("input$go_keytype"), ", ", code("input$go_orgdb"), ", ", code("input$kegg_species"), " and ", code("input$pmn_cyc_db"), " for organism-aware analyses. For KEGG/Pathview, use ", code("map_de_ids_for_kegg()"), " so Ensembl/SYMBOL IDs are converted to KEGG-compatible IDs. For PMN, use the organism locus IDs expected by the selected Cyc database."),
+              #   tags$li(strong("Adding a new analysis tab: "), "Add a ", code("tabPanel()"), " in the main ", code("tabsetPanel(id = 'tabs')"), ", add tab-specific sidebar controls with ", code("conditionalPanel(\"input.tabs == 'Tab name'\", ...)"), ", add result objects to ", code("rv"), ", clear them in ", code("clear_analysis_results()"), ", and add table/plot/download outputs."),
+              #   tags$li(strong("Run workflow pattern: "), "Use ", code("observeEvent(input$run_x, { withProgress(... tryCatch(...)) })"), ". On success, store raw tables and plots in ", code("rv"), " and call ", code("append_log()"), ". On failure, use ", code("showNotification(e$message, type = 'error')"), " and also log the error."),
+              #   tags$li(strong("Plot downloads: "), "For ggplot outputs, expose a reactive plot object and connect it with ", code("download_plot_ui()"), " in the UI and ", code("download_plot_server()"), " in the server. Keep plot width/height controls tab-specific where possible."),
+              #   tags$li(strong("File downloads: "), "Use safe, informative filenames. For organism-specific files use ", code("safe_filename_part()"), " and include organism name/tax ID when relevant."),
+              #   tags$li(strong("Testing after edits: "), "At minimum run ", code("Rscript -e \"parse('app_140526/app.R')\""), " and source any changed helper scripts. For mapping changes, test a small known ID example, such as human ", code("ENSG00000141510"), " mapping to Entrez ", code("7157"), " or UniProt ", code("P04637"), "."),
+              #   tags$li(strong("Do not break existing behavior: "), "Keep Arabidopsis TAIR workflows working while adding human/other organism support. Avoid changing input IDs unless all server references are updated.")
+              # )
             ),
             tabPanel("Dependencies",
               br(),
@@ -1410,6 +1541,11 @@ server <- function(input, output, session) {
     go_genes = NULL,
     te_volcano = NULL,
     te_volcano_plot = NULL,
+    te_overlap = NULL,
+    te_overlap_table = NULL,
+    te_overlap_family_counts = NULL,
+    te_overlap_volcano_plot = NULL,
+    te_overlap_family_plot = NULL,
     gene_groups = NULL,
     gene_group_plots = NULL,
     gg_context = NULL,
@@ -1443,7 +1579,7 @@ server <- function(input, output, session) {
     uniprot_id_choices = NULL,
     uniprot_status = "Scan UniProt ID sources for the selected organism before building.",
     refseq_gtf_id_choices = NULL,
-    refseq_gtf_status = "Upload a RefSeq GTF file to scan available ID sources.",
+    refseq_gtf_status = "Upload a RefSeq GTF/GFF3 file to scan available ID sources.",
     taxonomy_results = NULL,
     selected_tax_id = 3702,
     selected_organism_label = "Arabidopsis thaliana",
@@ -1810,6 +1946,11 @@ server <- function(input, output, session) {
     rv$go_genes <- NULL
     rv$te_volcano <- NULL
     rv$te_volcano_plot <- NULL
+    rv$te_overlap <- NULL
+    rv$te_overlap_table <- NULL
+    rv$te_overlap_family_counts <- NULL
+    rv$te_overlap_volcano_plot <- NULL
+    rv$te_overlap_family_plot <- NULL
     rv$gene_groups <- NULL
     rv$gene_group_plots <- NULL
     rv$gg_context <- NULL
@@ -2623,6 +2764,7 @@ server <- function(input, output, session) {
               "Tableau" = "tableau",
               "Viridis" = "viridis",
               "Plasma" = "plasma",
+              "Rainbow" = "rainbow",
               "Pastel" = "pastel"
             ),
             selected = "default"
@@ -3024,7 +3166,7 @@ server <- function(input, output, session) {
     req(rv$annotation_preview_ready, rv$annotation_df)
     d <- rv$annotation_df
     d$annotation_key <- NULL
-    d <- head(d, 5000)
+    # d <- head(d, 5000)
     rv$annotation_preview_modal_data <- d
     display_d <- add_row_detail_buttons(d, "annotation_preview")
     datatable(display_d, rownames = FALSE, filter = "top", selection = "none", escape = FALSE,
@@ -3103,7 +3245,7 @@ server <- function(input, output, session) {
   output$refseq_gtf_id_source_ui <- renderUI({
     choices <- rv$refseq_gtf_id_choices
     if (is.null(choices) || length(choices) == 0) {
-      return(selectInput("refseq_gtf_id_source", "Use as gene_id", choices = c("Upload a GTF file first" = ""), selected = ""))
+      return(selectInput("refseq_gtf_id_source", "Use as gene_id", choices = c("Upload a GTF/GFF3 file first" = ""), selected = ""))
     }
 
     selected <- if ("db_xref_GenBank" %in% unname(choices)) {
@@ -3122,22 +3264,22 @@ server <- function(input, output, session) {
 
   observeEvent(input$refseq_gtf_file, {
     req(input$refseq_gtf_file$datapath)
-    append_log("Scanning RefSeq GTF ID sources:", input$refseq_gtf_file$name, level = "STEP")
+    append_log("Scanning RefSeq GTF/GFF3 ID sources:", input$refseq_gtf_file$name, level = "STEP")
     rv$refseq_gtf_status <- paste("Scanning ID sources in", input$refseq_gtf_file$name, "...")
-    withProgress(message = "Scanning RefSeq GTF", value = 0.2, {
+    withProgress(message = "Scanning RefSeq GTF/GFF3", value = 0.2, {
       tryCatch({
-        incProgress(0.3, detail = "Reading GTF attributes")
+        incProgress(0.3, detail = "Reading GTF/GFF3 attributes")
         choices <- refseq_gtf_id_source_choices(input$refseq_gtf_file$datapath, max_rows = 50000)
-        if (length(choices) == 0) stop("No usable GTF attributes or db_xref IDs were found.")
+        if (length(choices) == 0) stop("No usable GTF/GFF3 attributes or db_xref IDs were found.")
         rv$refseq_gtf_id_choices <- choices
         rv$refseq_gtf_status <- paste("Found", length(choices), "ID sources. Choose one, then build the description file.")
-        showNotification(paste("Found", length(choices), "RefSeq GTF ID sources."), type = "message", duration = 5)
-        append_log("Found", length(choices), "RefSeq GTF ID sources in", input$refseq_gtf_file$name)
+        showNotification(paste("Found", length(choices), "RefSeq GTF/GFF3 ID sources."), type = "message", duration = 5)
+        append_log("Found", length(choices), "RefSeq GTF/GFF3 ID sources in", input$refseq_gtf_file$name)
       }, error = function(e) {
         rv$refseq_gtf_id_choices <- NULL
-        rv$refseq_gtf_status <- paste("RefSeq GTF scan error:", e$message)
+        rv$refseq_gtf_status <- paste("RefSeq GTF/GFF3 scan error:", e$message)
         showNotification(e$message, type = "error", duration = 12)
-        append_log("RefSeq GTF scan error:", e$message)
+        append_log("RefSeq GTF/GFF3 scan error:", e$message)
       })
     })
   }, ignoreInit = TRUE)
@@ -3162,12 +3304,12 @@ server <- function(input, output, session) {
   observeEvent(input$build_refseq_gtf_annotations, {
     req(input$refseq_gtf_file$datapath)
     id_source <- input$refseq_gtf_id_source %||% ""
-    validate(need(nzchar(id_source), "Upload a GTF file and select an ID source."))
-    append_log("Building RefSeq GTF annotation table from", input$refseq_gtf_file$name, "using", id_source, level = "STEP")
+    validate(need(nzchar(id_source), "Upload a GTF/GFF3 file and select an ID source."))
+    append_log("Building RefSeq GTF/GFF3 annotation table from", input$refseq_gtf_file$name, "using", id_source, level = "STEP")
     rv$refseq_gtf_status <- paste("Building description file using", id_source, "...")
-    withProgress(message = "Building RefSeq GTF description file", value = 0.1, {
+    withProgress(message = "Building RefSeq GTF/GFF3 description file", value = 0.1, {
       tryCatch({
-        incProgress(0.2, detail = "Parsing GTF attributes and db_xref IDs")
+        incProgress(0.2, detail = "Parsing GTF/GFF3 attributes and db_xref IDs")
         ann <- build_refseq_gtf_description_file(
           input$refseq_gtf_file$datapath,
           gene_id_source = id_source,
@@ -3176,7 +3318,7 @@ server <- function(input, output, session) {
         incProgress(0.4, detail = "Normalizing annotation table")
         ann <- normalize_annotation_table(ann)
         rv$annotation_df <- ann
-        rv$annotation_label <- paste0("RefSeq GTF ", input$refseq_gtf_file$name, " using ", id_source)
+        rv$annotation_label <- paste0("RefSeq GTF/GFF3 ", input$refseq_gtf_file$name, " using ", id_source)
         rv$annotation_replace_gene_id <- TRUE
         rv$annotation_preview_ready <- TRUE
 
@@ -3190,12 +3332,12 @@ server <- function(input, output, session) {
         incProgress(0.3, detail = "Applying annotations to DE table")
         if (!is.null(rv$de_base)) apply_current_annotation(reset_results = TRUE)
         rv$refseq_gtf_status <- paste("Built", nrow(ann), "annotation rows from", input$refseq_gtf_file$name, "using", id_source)
-        showNotification(paste("Built RefSeq GTF annotation table:", nrow(ann), "rows."), type = "message", duration = 6)
-        append_log("Built RefSeq GTF annotation table:", nrow(ann), "rows from", input$refseq_gtf_file$name)
+        showNotification(paste("Built RefSeq GTF/GFF3 annotation table:", nrow(ann), "rows."), type = "message", duration = 6)
+        append_log("Built RefSeq GTF/GFF3 annotation table:", nrow(ann), "rows from", input$refseq_gtf_file$name)
       }, error = function(e) {
-        rv$refseq_gtf_status <- paste("RefSeq GTF annotation error:", e$message)
+        rv$refseq_gtf_status <- paste("RefSeq GTF/GFF3 annotation error:", e$message)
         showNotification(e$message, type = "error", duration = 15)
-        append_log("RefSeq GTF annotation error:", e$message)
+        append_log("RefSeq GTF/GFF3 annotation error:", e$message)
       })
     })
   })
@@ -4070,7 +4212,12 @@ server <- function(input, output, session) {
                                       algorithm = input$revigo_algorithm %||% "umap",
                                       color_palette = input$revigo_color_palette %||% "set1",
                                       show_labels = isTRUE(input$revigo_show_labels),
-                                      max_parent_labels = input$revigo_parent_label_count %||% 8)
+                                      max_parent_labels = input$revigo_parent_label_count %||% 8,
+                                      parent_label_hjust = input$revigo_parent_label_hjust %||% 0,
+                                      parent_label_nudge_x = input$revigo_parent_label_nudge_x %||% 0.15,
+                                      parent_label_segment_size = input$revigo_parent_label_segment_size %||% 0.3,
+                                      parent_label_colored = isTRUE(input$revigo_parent_label_colored),
+                                      parent_label_size = input$revigo_parent_label_size %||% 3)
         rv$revigo_direction <- direction
         append_log("REVIGO-like analysis finished for", direction, "genes.")
       }, error = function(e) {
@@ -4104,6 +4251,11 @@ server <- function(input, output, session) {
       color_palette = input$revigo_color_palette %||% "set1",
       show_labels = isTRUE(input$revigo_show_labels),
       max_parent_labels = input$revigo_parent_label_count %||% 8,
+      parent_label_hjust = input$revigo_parent_label_hjust %||% 0,
+      parent_label_nudge_x = input$revigo_parent_label_nudge_x %||% 0.15,
+      parent_label_segment_size = input$revigo_parent_label_segment_size %||% 0.3,
+      parent_label_colored = isTRUE(input$revigo_parent_label_colored),
+      parent_label_size = input$revigo_parent_label_size %||% 3,
       plot_theme = input$plot_theme %||% "classic",
       font_family = input$plot_font_family %||% "serif"
     )$plot
@@ -4172,8 +4324,7 @@ server <- function(input, output, session) {
         rv$te_enrichment <- res
         updateSelectizeInput(session, "te_super_families", selected = te_volcano_default_superfamilies())
         
-        incProgress(0.5, detail = "Generating Plot")
-        rv$te_enrich_bubble <- NULL
+        incProgress(0.5, detail = "Preparing plots")
         
         append_log("TE enrichment completed.")
       }, error = function(e) {
@@ -4188,22 +4339,55 @@ server <- function(input, output, session) {
     datatable(rv$te_enrichment, rownames = FALSE, filter = "top", options = list(pageLength = 15, scrollX = TRUE))
   })
   
-  te_enrich_bubble_reactive <- reactive({
+  te_enrich_direction_plot <- function(direction) {
     req(rv$te_enrichment)
-    plot_te_enrichment(
+    plot_te_enrichment_direction(
       rv$te_enrichment,
+      direction = direction,
       p_value_threshold = input$te_enrich_pvalue,
       color_up = input$color_up %||% "#B2182B",
       color_down = input$color_down %||% "#2166AC",
+      color_all = "#e6ac6a",
+      top_n = 10,
       plot_theme = input$plot_theme %||% "classic",
       font_family = input$plot_font_family %||% "serif"
     )
+  }
+
+  te_enrich_up_reactive <- reactive({
+    te_enrich_direction_plot("up")
+  })
+
+  te_enrich_down_reactive <- reactive({
+    te_enrich_direction_plot("down")
+  })
+
+  te_enrich_all_reactive <- reactive({
+    te_enrich_direction_plot("all")
   })
   
-  output$te_enrich_bubble <- renderPlot({
-    p <- tryCatch(te_enrich_bubble_reactive(), error = function(e) NULL)
+  output$te_enrich_up_plot <- renderPlot({
+    p <- tryCatch(te_enrich_up_reactive(), error = function(e) NULL)
     if (is.null(p)) {
-      plot.new(); text(0.5, 0.5, "No significantly enriched TE superfamilies.", cex = 1.1)
+      plot.new(); text(0.5, 0.5, "No significantly enriched upregulated TE superfamilies.", cex = 1.1)
+    } else {
+      p
+    }
+  }, width = function() input$teg_plot_width, height = function() input$teg_plot_height)
+
+  output$te_enrich_down_plot <- renderPlot({
+    p <- tryCatch(te_enrich_down_reactive(), error = function(e) NULL)
+    if (is.null(p)) {
+      plot.new(); text(0.5, 0.5, "No significantly enriched downregulated TE superfamilies.", cex = 1.1)
+    } else {
+      p
+    }
+  }, width = function() input$teg_plot_width, height = function() input$teg_plot_height)
+
+  output$te_enrich_all_plot <- renderPlot({
+    p <- tryCatch(te_enrich_all_reactive(), error = function(e) NULL)
+    if (is.null(p)) {
+      plot.new(); text(0.5, 0.5, "No significantly enriched DE TE superfamilies.", cex = 1.1)
     } else {
       p
     }
@@ -4264,6 +4448,267 @@ server <- function(input, output, session) {
     datatable(button_data$data, rownames = FALSE, filter = "top", escape = !button_data$has_buttons,
               options = list(
                 pageLength = 12,
+                scrollX = TRUE,
+                autoWidth = FALSE,
+                columnDefs = if (button_data$has_buttons) gene_count_button_defs else list()
+              ),
+              callback = if (button_data$has_buttons) gene_count_button_callback else JS(""))
+  })
+
+  observeEvent(input$run_te_overlap, {
+    req(rv$de)
+    append_log("Finding TEs overlapping DEG regions", level = "STEP")
+    withProgress(message = "Finding overlapped TEs", value = 0.15, {
+      tryCatch({
+        incProgress(0.25, detail = "Loading TAIR10 gene and TE ranges")
+        out <- run_overlapped_te_analysis(
+          rv$de,
+          region = input$te_overlap_region %||% "upstream",
+          flank_bp = input$te_overlap_flank_bp %||% 2000,
+          direction = input$te_overlap_direction %||% "all",
+          alpha = input$alpha,
+          lfc_cutoff = input$lfc_cutoff,
+          include_tegs = isTRUE(input$te_overlap_include_tegs)
+        )
+        incProgress(0.5, detail = "Preparing table and plots")
+        rv$te_overlap <- out
+        rv$te_overlap_table <- out$gene_table
+        rv$te_overlap_family_counts <- out$family_counts
+        rv$te_overlap_volcano_plot <- NULL
+        rv$te_overlap_family_plot <- NULL
+        overlap_families <- character(0)
+        if (!is.null(out$overlaps) && nrow(out$overlaps) > 0 && "TE_family" %in% names(out$overlaps)) {
+          overlap_families <- sort(unique(as.character(out$overlaps$TE_family)))
+          overlap_families <- overlap_families[!is.na(overlap_families) & nzchar(overlap_families)]
+        }
+        top_enriched_families <- character(0)
+        if (length(overlap_families) > 0) {
+          enrichment_background <- input$te_overlap_enrichment_background %||% "all_tair10"
+          background_overlaps <- NULL
+          if (identical(enrichment_background, "region_aware")) {
+            all_windows <- make_gene_overlap_windows(
+              out$all_gene_ranges,
+              region = out$region %||% "upstream",
+              flank_bp = out$flank_bp %||% 2000
+            )
+            background_overlaps <- find_te_gene_range_overlaps(all_windows, out$te_ranges)
+            if (identical(out$region %||% "", "both")) {
+              background_overlaps <- keep_genes_with_both_region_overlaps(background_overlaps)
+            }
+          }
+          enrich_tbl <- make_te_family_enrichment(
+            out$overlaps,
+            out$te_ranges,
+            background = enrichment_background,
+            background_overlaps = background_overlaps
+          )
+          if (!is.null(enrich_tbl) && nrow(enrich_tbl) > 0) {
+            # top_n <- suppressWarnings(as.integer(input$te_overlap_top_n %||% 20))
+            # if (!is.finite(top_n) || is.na(top_n) || top_n < 1) top_n <- 20
+            top_n <- suppressWarnings(as.integer(input$te_overlap_top_n %||% 4))
+            if (!is.finite(top_n) || is.na(top_n) || top_n < 1) top_n <- 4
+            
+            enrich_tbl <- enrich_tbl[order(enrich_tbl$padj, -enrich_tbl$observed_TE_count, na.last = TRUE), , drop = FALSE]
+            top_enriched_families <- head(as.character(enrich_tbl$TE_family), top_n)
+          }
+        }
+        updateSelectizeInput(
+          session,
+          "te_overlap_volcano_families",
+          choices = stats::setNames(overlap_families, overlap_families),
+          selected = head(top_enriched_families, 4),
+          server = TRUE
+        )
+        append_log("Overlapped TE analysis completed:", nrow(out$gene_table), "genes and", nrow(out$family_counts), "TE families.")
+      }, error = function(e) {
+        rv$te_overlap <- NULL
+        rv$te_overlap_table <- NULL
+        rv$te_overlap_family_counts <- NULL
+        rv$te_overlap_volcano_plot <- NULL
+        rv$te_overlap_family_plot <- NULL
+        updateSelectizeInput(session, "te_overlap_volcano_families", choices = character(0), selected = character(0), server = TRUE)
+        showNotification(paste("Overlapped TE error:", e$message), type = "error", duration = 15)
+        append_log("Overlapped TE error:", e$message)
+      })
+    })
+  })
+
+  observeEvent({
+    input$te_overlap_enrichment_background
+    input$te_overlap_top_n
+  }, {
+    req(rv$te_overlap)
+    overlap_families <- character(0)
+    if (!is.null(rv$te_overlap$overlaps) && nrow(rv$te_overlap$overlaps) > 0 && "TE_family" %in% names(rv$te_overlap$overlaps)) {
+      overlap_families <- sort(unique(as.character(rv$te_overlap$overlaps$TE_family)))
+      overlap_families <- overlap_families[!is.na(overlap_families) & nzchar(overlap_families)]
+    }
+    top_enriched_families <- character(0)
+    if (length(overlap_families) > 0) {
+      background_overlaps <- NULL
+      if (identical(input$te_overlap_enrichment_background %||% "all_tair10", "region_aware")) {
+        all_windows <- make_gene_overlap_windows(
+          rv$te_overlap$all_gene_ranges,
+          region = rv$te_overlap$region %||% "upstream",
+          flank_bp = rv$te_overlap$flank_bp %||% 2000
+        )
+        background_overlaps <- find_te_gene_range_overlaps(all_windows, rv$te_overlap$te_ranges)
+        if (identical(rv$te_overlap$region %||% "", "both")) {
+          background_overlaps <- keep_genes_with_both_region_overlaps(background_overlaps)
+        }
+      }
+      enrich_tbl <- make_te_family_enrichment(
+        rv$te_overlap$overlaps,
+        rv$te_overlap$te_ranges,
+        background = input$te_overlap_enrichment_background %||% "all_tair10",
+        background_overlaps = background_overlaps
+      )
+      if (!is.null(enrich_tbl) && nrow(enrich_tbl) > 0) {
+        top_n <- suppressWarnings(as.integer(input$te_overlap_top_n %||% 20))
+        if (!is.finite(top_n) || is.na(top_n) || top_n < 1) top_n <- 20
+        enrich_tbl <- enrich_tbl[order(enrich_tbl$padj, -enrich_tbl$observed_TE_count, na.last = TRUE), , drop = FALSE]
+        top_enriched_families <- head(as.character(enrich_tbl$TE_family), top_n)
+      }
+    }
+    updateSelectizeInput(
+      session,
+      "te_overlap_volcano_families",
+      choices = stats::setNames(overlap_families, overlap_families),
+      selected = head(top_enriched_families, 4),
+      server = TRUE
+    )
+  }, ignoreInit = TRUE)
+
+  te_overlap_volcano_table_reactive <- reactive({
+    req(rv$te_overlap_table)
+    d <- rv$te_overlap_table
+    selected_families <- input$te_overlap_volcano_families %||% character(0)
+    selected_families <- selected_families[!is.na(selected_families) & nzchar(selected_families)]
+    if (length(selected_families) > 0) {
+      if (!is.null(rv$te_overlap$overlaps) && nrow(rv$te_overlap$overlaps) > 0 && "TE_family" %in% names(rv$te_overlap$overlaps)) {
+        keep_genes <- unique(rv$te_overlap$overlaps$gene_id[rv$te_overlap$overlaps$TE_family %in% selected_families])
+        d <- d[d$gene_id %in% keep_genes, , drop = FALSE]
+      } else if ("overlapped_TE_families" %in% names(d)) {
+        has_family <- vapply(strsplit(as.character(d$overlapped_TE_families), ";\\s*"), function(x) {
+          any(x %in% selected_families)
+        }, logical(1))
+        d <- d[has_family, , drop = FALSE]
+      }
+    }
+    d
+  })
+
+  te_overlap_volcano_reactive <- reactive({
+    plot_df <- te_overlap_volcano_table_reactive()
+    req(nrow(plot_df) > 0)
+    make_gene_group_volcano_plot(
+      plot_df,
+      paste0("Overlapped TEs - ", input$te_overlap_region %||% "region"),
+      alpha = input$alpha,
+      lfc_cutoff = input$lfc_cutoff,
+      color_up = input$color_up %||% "#B2182B",
+      color_down = input$color_down %||% "#2166AC",
+      color_ns = input$color_ns %||% "#B3B3B3",
+      plot_theme = input$plot_theme %||% "classic",
+      font_family = input$plot_font_family %||% "serif"
+    )
+  })
+
+  output$te_overlap_volcano <- renderPlot({
+    if (is.null(rv$te_overlap_table)) {
+      plot.new(); text(0.5, 0.5, "Run overlapped TE analysis first.", cex = 1.1)
+    } else if (nrow(rv$te_overlap_table) == 0) {
+      plot.new(); text(0.5, 0.5, "No DEGs overlapped TEs for the selected region.", cex = 1.1)
+    } else if (nrow(te_overlap_volcano_table_reactive()) == 0) {
+      plot.new(); text(0.5, 0.5, "No overlapped genes for the selected TE family filter.", cex = 1.1)
+    } else {
+      te_overlap_volcano_reactive()
+    }
+  }, width = function() input$teg_plot_width, height = function() input$teg_plot_height)
+
+  te_overlap_family_plot_reactive <- reactive({
+    req(rv$te_overlap_family_counts)
+    p <- plot_overlapped_te_family_counts(
+      rv$te_overlap_family_counts,
+      top_n = input$te_overlap_top_n %||% 20,
+      plot_theme = input$plot_theme %||% "classic",
+      font_family = input$plot_font_family %||% "serif",
+      color_palette = input$te_color_palette %||% "default"
+    )
+    req(!is.null(p))
+    p
+  })
+
+  output$te_overlap_family_plot <- renderPlot({
+    if (is.null(rv$te_overlap_family_counts)) {
+      plot.new(); text(0.5, 0.5, "Run overlapped TE analysis first.", cex = 1.1)
+    } else if (nrow(rv$te_overlap_family_counts) == 0) {
+      plot.new(); text(0.5, 0.5, "No overlapped TE families found.", cex = 1.1)
+    } else {
+      te_overlap_family_plot_reactive()
+    }
+  }, width = function() input$teg_plot_width, height = function() input$teg_plot_height)
+
+  te_overlap_enrichment_reactive <- reactive({
+    req(rv$te_overlap)
+    background <- input$te_overlap_enrichment_background %||% "all_tair10"
+    background_overlaps <- NULL
+    if (identical(background, "region_aware")) {
+      req(rv$te_overlap$all_gene_ranges, rv$te_overlap$te_ranges)
+      withProgress(message = "Computing region-aware TE background", value = 0.4, {
+        all_windows <- make_gene_overlap_windows(
+          rv$te_overlap$all_gene_ranges,
+          region = rv$te_overlap$region %||% "upstream",
+          flank_bp = rv$te_overlap$flank_bp %||% 2000
+        )
+        incProgress(0.4, detail = "Finding TE overlaps across all TAIR genes")
+        background_overlaps <- find_te_gene_range_overlaps(all_windows, rv$te_overlap$te_ranges)
+        if (identical(rv$te_overlap$region %||% "", "both")) {
+          background_overlaps <- keep_genes_with_both_region_overlaps(background_overlaps)
+        }
+      })
+    }
+    make_te_family_enrichment(
+      rv$te_overlap$overlaps,
+      rv$te_overlap$te_ranges,
+      background = background,
+      background_overlaps = background_overlaps
+    )
+  })
+
+  te_overlap_enrichment_plot_reactive <- reactive({
+    d <- te_overlap_enrichment_reactive()
+    req(nrow(d) > 0)
+    p <- plot_te_family_enrichment(
+      d,
+      top_n = input$te_overlap_top_n %||% 20,
+      plot_theme = input$plot_theme %||% "classic",
+      font_family = input$plot_font_family %||% "serif"
+    )
+    req(!is.null(p))
+    p
+  })
+
+  output$te_overlap_enrichment_plot <- renderPlot({
+    if (is.null(rv$te_overlap)) {
+      plot.new(); text(0.5, 0.5, "Run overlapped TE analysis first.", cex = 1.1)
+    } else {
+      d <- tryCatch(te_overlap_enrichment_reactive(), error = function(e) NULL)
+      if (is.null(d) || nrow(d) == 0) {
+        plot.new(); text(0.5, 0.5, "No TE family enrichment could be calculated.", cex = 1.1)
+      } else {
+        te_overlap_enrichment_plot_reactive()
+      }
+    }
+  }, width = function() input$teg_plot_width, height = function() input$teg_plot_height)
+
+  output$te_overlap_table <- renderDT({
+    req(rv$te_overlap_table)
+    req(nrow(rv$te_overlap_table) > 0)
+    button_data <- add_gene_count_buttons(rv$te_overlap_table)
+    datatable(button_data$data, rownames = FALSE, filter = "top", escape = !button_data$has_buttons,
+              options = list(
+                pageLength = 15,
                 scrollX = TRUE,
                 autoWidth = FALSE,
                 columnDefs = if (button_data$has_buttons) gene_count_button_defs else list()
@@ -4447,7 +4892,9 @@ server <- function(input, output, session) {
     filename = function() paste0("REVIGO_", rv$revigo_direction %||% "selected", "_table_", input$ontology, "_", Sys.Date(), ".csv"),
     content = function(file) { req(rv$revigo); write.csv(rv$revigo$table, file, row.names = FALSE) }
   )
-  output$download_te_enrich_bubble <- download_plot_server(te_enrich_bubble_reactive, reactive(input$format_te_enrich_bubble), "TE_Enrichment_bubble", reactive(input$teg_plot_width), reactive(input$teg_plot_height))
+  output$download_te_enrich_up <- download_plot_server(te_enrich_up_reactive, reactive(input$format_te_enrich_up), "TE_Enrichment_upregulated", reactive(input$teg_plot_width), reactive(input$teg_plot_height))
+  output$download_te_enrich_down <- download_plot_server(te_enrich_down_reactive, reactive(input$format_te_enrich_down), "TE_Enrichment_downregulated", reactive(input$teg_plot_width), reactive(input$teg_plot_height))
+  output$download_te_enrich_all <- download_plot_server(te_enrich_all_reactive, reactive(input$format_te_enrich_all), "TE_Enrichment_all_DE", reactive(input$teg_plot_width), reactive(input$teg_plot_height))
   output$download_te_enrich_table <- downloadHandler(
     filename = function() paste0("TE_Enrichment_table_", Sys.Date(), ".csv"),
     content = function(file) { req(rv$te_enrichment); write.csv(rv$te_enrichment, file, row.names = FALSE) }
@@ -4456,6 +4903,25 @@ server <- function(input, output, session) {
   output$download_te_volcano_table <- downloadHandler(
     filename = function() paste0("TEG_volcano_table_", Sys.Date(), ".csv"),
     content = function(file) { req(rv$te_volcano); write.csv(rv$te_volcano, file, row.names = FALSE) }
+  )
+  output$download_te_overlap_volcano <- download_plot_server(te_overlap_volcano_reactive, reactive(input$format_te_overlap_volcano), "Overlapped_TE_volcano", reactive(input$teg_plot_width), reactive(input$teg_plot_height))
+  output$download_te_overlap_family <- download_plot_server(te_overlap_family_plot_reactive, reactive(input$format_te_overlap_family), "Overlapped_TE_family_counts", reactive(input$teg_plot_width), reactive(input$teg_plot_height))
+  output$download_te_overlap_family_table <- downloadHandler(
+    filename = function() paste0("Overlapped_TE_family_counts_", Sys.Date(), ".csv"),
+    content = function(file) { req(rv$te_overlap_family_counts); write.csv(rv$te_overlap_family_counts, file, row.names = FALSE) }
+  )
+  output$download_te_overlap_enrichment <- download_plot_server(te_overlap_enrichment_plot_reactive, reactive(input$format_te_overlap_enrichment), "Overlapped_TE_family_enrichment", reactive(input$teg_plot_width), reactive(input$teg_plot_height))
+  output$download_te_overlap_enrichment_table <- downloadHandler(
+    filename = function() paste0("Overlapped_TE_family_enrichment_", input$te_overlap_enrichment_background %||% "background", "_", Sys.Date(), ".csv"),
+    content = function(file) {
+      d <- te_overlap_enrichment_reactive()
+      req(!is.null(d), nrow(d) > 0)
+      write.csv(d, file, row.names = FALSE)
+    }
+  )
+  output$download_te_overlap_table <- downloadHandler(
+    filename = function() paste0("Overlapped_TE_genes_", Sys.Date(), ".csv"),
+    content = function(file) { req(rv$te_overlap_table); write.csv(rv$te_overlap_table, file, row.names = FALSE) }
   )
 
   # ---- Gene Groups ---------------------------------------------------------

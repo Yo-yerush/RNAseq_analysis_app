@@ -1,6 +1,6 @@
 ############################################################
-# RefSeq GTF annotation builder
-# Builds a description table from an NCBI RefSeq GTF file.
+# RefSeq GTF/GFF3 annotation builder
+# Builds a description table from an NCBI RefSeq GTF or GFF3 file.
 ############################################################
 
 if (!exists("%||%", mode = "function")) {
@@ -44,9 +44,17 @@ refseq_gtf_split_ids <- function(x) {
   x <- as.character(x)
   x <- x[!is.na(x) & nzchar(trimws(x))]
   if (!length(x)) return(character())
-  ids <- unlist(strsplit(x, ";", fixed = TRUE), use.names = FALSE)
+  ids <- unlist(strsplit(x, "[;,]", perl = TRUE), use.names = FALSE)
   ids <- trimws(ids)
   unique(ids[!is.na(ids) & nzchar(ids)])
+}
+
+refseq_gtf_decode_attribute_value <- function(x) {
+  x <- trimws(as.character(x))
+  missing <- is.na(x)
+  out <- tryCatch(utils::URLdecode(x), error = function(e) x)
+  out[missing] <- NA_character_
+  trimws(out)
 }
 
 refseq_gtf_escape_regex <- function(x) {
@@ -54,18 +62,24 @@ refseq_gtf_escape_regex <- function(x) {
 }
 
 refseq_gtf_extract_attribute <- function(attributes, key) {
-  pattern <- paste0("(?:^|;)\\s*", refseq_gtf_escape_regex(key), "\\s+\"([^\"]*)\"")
+  pattern <- paste0("(?:^|;)\\s*", refseq_gtf_escape_regex(key), "(?:\\s+\"([^\"]*)\"|=([^;]*))")
   if (requireNamespace("stringi", quietly = TRUE)) {
     hit <- stringi::stri_match_first_regex(attributes, pattern)
-    return(hit[, 2])
+    out <- ifelse(!is.na(hit[, 2]), hit[, 2], hit[, 3])
+    return(refseq_gtf_decode_attribute_value(out))
   }
   m <- regexec(pattern, attributes, perl = TRUE)
   r <- regmatches(attributes, m)
-  vapply(r, function(z) if (length(z) >= 2) z[2] else NA_character_, character(1))
+  out <- vapply(r, function(z) {
+    if (length(z) >= 2 && nzchar(z[2])) return(z[2])
+    if (length(z) >= 3 && nzchar(z[3])) return(z[3])
+    NA_character_
+  }, character(1))
+  refseq_gtf_decode_attribute_value(out)
 }
 
 refseq_gtf_discover_attribute_keys <- function(attributes) {
-  pattern <- "(?:^|;)\\s*([A-Za-z0-9_.:-]+)\\s+\""
+  pattern <- "(?:^|;)\\s*([A-Za-z0-9_.:-]+)(?:\\s+\"|=)"
   if (requireNamespace("stringi", quietly = TRUE)) {
     keys <- unlist(lapply(stringi::stri_match_all_regex(attributes, pattern), function(x) x[, 2]), use.names = FALSE)
   } else {
@@ -79,24 +93,30 @@ refseq_gtf_discover_attribute_keys <- function(attributes) {
 }
 
 refseq_gtf_extract_db_xrefs <- function(attributes) {
-  pattern <- "(?:^|;)\\s*db_xref\\s+\"([^\"]*)\""
+  pattern <- "(?:^|;)\\s*(?:db_xref|Dbxref)\\s*(?:\"([^\"]*)\"|=([^;]*))"
   if (requireNamespace("stringi", quietly = TRUE)) {
     matches <- stringi::stri_match_all_regex(attributes, pattern)
     return(lapply(matches, function(x) {
-      if (is.null(x) || nrow(x) == 0) character() else x[, 2]
+      if (is.null(x) || nrow(x) == 0) return(character())
+      vals <- ifelse(!is.na(x[, 2]), x[, 2], x[, 3])
+      vals <- refseq_gtf_decode_attribute_value(vals)
+      unlist(strsplit(vals, ",", fixed = TRUE), use.names = FALSE)
     }))
   }
   raw <- regmatches(attributes, gregexpr(pattern, attributes, perl = TRUE))
   lapply(raw, function(x) {
     if (!length(x)) return(character())
-    sub(".*db_xref\\s+\"", "", sub("\"$", "", x, perl = TRUE), perl = TRUE)
+    vals <- sub("^(?:.*(?:db_xref|Dbxref)\\s*(?:\"|=))", "", x, perl = TRUE)
+    vals <- sub("\"$", "", vals, perl = TRUE)
+    vals <- refseq_gtf_decode_attribute_value(vals)
+    unlist(strsplit(vals, ",", fixed = TRUE), use.names = FALSE)
   })
 }
 
 read_refseq_gtf <- function(gtf_file, n_max = Inf) {
   refseq_gtf_required_packages()
   if (is.null(gtf_file) || !nzchar(gtf_file) || !file.exists(gtf_file)) {
-    stop("GTF file not found: ", gtf_file %||% "")
+    stop("GTF/GFF3 file not found: ", gtf_file %||% "")
   }
 
   cols <- c("seqid", "source", "feature", "start", "end", "score", "strand", "frame", "attribute")
@@ -110,7 +130,7 @@ read_refseq_gtf <- function(gtf_file, n_max = Inf) {
   )
 
   gtf <- as.data.frame(gtf, check.names = FALSE)
-  if (nrow(gtf) == 0) stop("No annotation rows were found in the GTF file.")
+  if (nrow(gtf) == 0) stop("No annotation rows were found in the GTF/GFF3 file.")
   gtf$start <- suppressWarnings(as.integer(gtf$start))
   gtf$end <- suppressWarnings(as.integer(gtf$end))
   gtf
@@ -135,15 +155,24 @@ parse_refseq_gtf_attribute_one <- function(attribute) {
       value <- sub("\"$", "", value, perl = TRUE)
     }
     key <- trimws(key)
-    value <- trimws(value)
+    value <- refseq_gtf_decode_attribute_value(value)
     if (!nzchar(key) || !nzchar(value)) next
-    out[[key]] <- c(out[[key]], value)
+    values <- if (key %in% c("Dbxref", "db_xref")) {
+      trimws(unlist(strsplit(value, ",", fixed = TRUE), use.names = FALSE))
+    } else {
+      value
+    }
+    values <- values[!is.na(values) & nzchar(values)]
+    out[[key]] <- c(out[[key]], values)
 
-    if (identical(key, "db_xref") && grepl(":", value, fixed = TRUE)) {
-      db <- sub(":.*$", "", value)
-      db_value <- sub("^[^:]+:", "", value)
-      db_col <- paste0("db_xref_", refseq_gtf_clean_db_name(db))
-      out[[db_col]] <- c(out[[db_col]], db_value)
+    if (key %in% c("Dbxref", "db_xref")) {
+      out[["db_xref"]] <- c(out[["db_xref"]], values)
+      for (dbxref_value in values[grepl(":", values, fixed = TRUE)]) {
+        db <- sub(":.*$", "", dbxref_value)
+        db_value <- sub("^[^:]+:", "", dbxref_value)
+        db_col <- paste0("db_xref_", refseq_gtf_clean_db_name(db))
+        out[[db_col]] <- c(out[[db_col]], db_value)
+      }
     }
   }
 
@@ -175,6 +204,7 @@ parse_refseq_gtf_attributes <- function(attributes) {
 fast_parse_refseq_gtf_attributes <- function(attributes, attribute_keys = NULL) {
   preferred_keys <- c(
     "gene_id", "gene", "locus_tag", "protein_id", "transcript_id",
+    "ID", "Parent", "Name", "Dbxref",
     "gbkey", "gene_biotype", "gene_synonym", "product", "description",
     "note", "Ontology_term", "transl_table", "exon_number",
     "transcript_biotype", "pseudo", "orig_protein_id", "exception",
@@ -182,7 +212,7 @@ fast_parse_refseq_gtf_attributes <- function(attributes, attribute_keys = NULL) 
   )
   if (is.null(attribute_keys)) {
     discovered_keys <- refseq_gtf_discover_attribute_keys(attributes)
-    keys <- unique(c(preferred_keys[preferred_keys %in% discovered_keys], setdiff(discovered_keys, c(preferred_keys, "db_xref"))))
+    keys <- unique(c(preferred_keys[preferred_keys %in% discovered_keys], setdiff(discovered_keys, c(preferred_keys, "db_xref", "Dbxref"))))
   } else {
     keys <- unique(setdiff(attribute_keys, c("db_xref", grep("^db_xref_", attribute_keys, value = TRUE))))
   }
@@ -243,7 +273,7 @@ refseq_gtf_id_source_table <- function(gtf_file, max_rows = 50000) {
   gtf <- read_refseq_gtf(gtf_file, n_max = max_rows)
   attrs <- fast_parse_refseq_gtf_attributes(
     gtf$attribute,
-    attribute_keys = c("gene_id", "gene", "locus_tag", "protein_id", "transcript_id")
+    attribute_keys = c("gene_id", "gene", "locus_tag", "protein_id", "transcript_id", "ID", "Parent", "Name")
   )
   attrs$.row_id <- NULL
   if (!ncol(attrs)) {
@@ -265,7 +295,7 @@ refseq_gtf_id_source_table <- function(gtf_file, max_rows = 50000) {
 
   preferred <- c(
     "gene_id", "gene", "locus_tag", "protein_id", "transcript_id",
-    "db_xref_GeneID", "db_xref_GenBank", "db_xref_RefSeq"
+    "ID", "Name", "Parent", "db_xref_GeneID", "db_xref_GenBank", "db_xref_RefSeq"
   )
   out$rank <- match(out$source, preferred)
   out$rank[is.na(out$rank)] <- length(preferred) + seq_len(sum(is.na(match(out$source, preferred))))
@@ -283,7 +313,8 @@ resolve_refseq_gtf_id_source <- function(gene_id_source, available_cols) {
   if (is.null(gene_id_source) || !nzchar(gene_id_source)) {
     preferred <- c(
       "gene_id", "locus_tag", "gene", "db_xref_GeneID",
-      "protein_id", "transcript_id", "db_xref_GenBank", "db_xref_RefSeq"
+      "protein_id", "transcript_id", "ID", "Name", "Parent",
+      "db_xref_GenBank", "db_xref_RefSeq"
     )
     hit <- preferred[preferred %in% available_cols]
     if (length(hit)) return(hit[1])
@@ -300,7 +331,7 @@ resolve_refseq_gtf_id_source <- function(gene_id_source, available_cols) {
   if (length(db_hit)) return(db_hit[1])
 
   stop(
-    "ID source '", gene_id_source, "' was not found in the GTF attributes. Available sources: ",
+    "ID source '", gene_id_source, "' was not found in the GTF/GFF3 attributes. Available sources: ",
     paste(available_cols, collapse = ", ")
   )
 }
@@ -310,7 +341,8 @@ summarise_refseq_gtf_by_gene <- function(gtf, attrs) {
   row_df <- cbind(gtf[, c("seqid", "source", "feature", "start", "end", "score", "strand", "frame"), drop = FALSE], attrs)
 
   group_candidates <- c(
-    "gene_id", "db_xref_GeneID", "locus_tag", "gene", "protein_id", "transcript_id"
+    "gene_id", "db_xref_GeneID", "locus_tag", "gene", "Parent", "ID",
+    "protein_id", "transcript_id", "Name"
   )
   row_df$gene_group_key <- refseq_gtf_coalesce_rows(row_df, group_candidates)
   missing_key <- is.na(row_df$gene_group_key) | !nzchar(row_df$gene_group_key)
@@ -386,13 +418,14 @@ build_refseq_gtf_description_file <- function(gtf_file,
     gtf$attribute,
     attribute_keys = unique(c(
       "gene_id", "gene", "locus_tag", "protein_id", "transcript_id",
-      "product", "description", "note", "Ontology_term", selected_attr_key
+      "ID", "Parent", "Name", "product", "description", "note", "Ontology_term",
+      selected_attr_key
     ))
   )
   attrs_for_choices <- attrs
   attrs_for_choices$.row_id <- NULL
   available_sources <- names(attrs_for_choices)
-  if (!length(available_sources)) stop("No parseable GTF attributes were found.")
+  if (!length(available_sources)) stop("No parseable GTF/GFF3 attributes were found.")
 
   id_source <- resolve_refseq_gtf_id_source(gene_id_source, available_sources)
   gene_summary <- summarise_refseq_gtf_by_gene(gtf, attrs)
@@ -414,7 +447,7 @@ build_refseq_gtf_description_file <- function(gtf_file,
 
   final_df <- data.frame(
     gene_id = gene_summary$selected_gene_id,
-    Symbol = gene_summary$gene %||% NA_character_,
+    Symbol = refseq_gtf_coalesce_rows(gene_summary, c("gene", "Name", "locus_tag")),
     Protein_name = gene_summary$product %||% NA_character_,
     Function_description = if ("description" %in% names(gene_summary)) {
       gene_summary$description
@@ -426,6 +459,9 @@ build_refseq_gtf_description_file <- function(gtf_file,
     RefSeq_gene_id = gene_summary$gene_id %||% NA_character_,
     RefSeq_gene_group_key = gene_summary$gene_group_key,
     RefSeq_selected_id_source = id_source,
+    GFF3_ID = gene_summary$ID %||% NA_character_,
+    GFF3_Parent = gene_summary$Parent %||% NA_character_,
+    GFF3_Name = gene_summary$Name %||% NA_character_,
     locus_tag = gene_summary$locus_tag %||% NA_character_,
     transcript_id = gene_summary$transcript_id %||% NA_character_,
     protein_id = gene_summary$protein_id %||% NA_character_,

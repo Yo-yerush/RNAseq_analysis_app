@@ -66,6 +66,7 @@ DEFAULT_ARABIDOPSIS_DESCRIPTION_URL <- "https://github.com/Yo-yerush/RA_lab_db/r
 DEFAULT_HUMAN_DESCRIPTION_URL <- "https://github.com/Yo-yerush/RA_lab_db/raw/refs/heads/main/description_files/Hs_description_file.csv.gz"
 DEFAULT_MG1655_DESCRIPTION_URL <- "https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/MG1655_description_file.csv"
 DEFAULT_TAIR_TE_URL <- "https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/TAIR10_Transposable_Elements.txt"
+DEFAULT_TAIR_GENE_RANGES_URL <- "https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/TAIR_genes_short.csv"
 DEFAULT_AT_GENE_FAMILIES_URL <- "https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/gene_families_sep_29_09_update.txt"
 DEFAULT_HGNC_FAMILY_URL <- "https://storage.googleapis.com/public-download-files/hgnc/csv/csv/genefamily_db_tables/family.csv"
 DEFAULT_HGNC_GENE_HAS_FAMILY_URL <- "https://storage.googleapis.com/public-download-files/hgnc/csv/csv/genefamily_db_tables/gene_has_family.csv"
@@ -150,7 +151,489 @@ read_any_table <- function(path, delim = NULL, source_name = path) {
   read_delimited_table(path, delim)
 }
 
+normalize_range_seqnames <- function(x) {
+  x <- trimws(as.character(x))
+  x <- sub("^chr", "", x, ignore.case = TRUE)
+  toupper(x)
+}
+
+load_tair_gene_ranges <- function(gene_ranges_file = DEFAULT_TAIR_GENE_RANGES_URL) {
+  genes <- as.data.frame(read_any_table(gene_ranges_file, delim = ","), check.names = FALSE)
+  needed <- c("seqnames", "start", "end", "strand", "gene_id")
+  missing <- setdiff(needed, names(genes))
+  if (length(missing)) stop("TAIR gene ranges file is missing columns: ", paste(missing, collapse = ", "))
+  genes$gene_id <- clean_tair_id(genes$gene_id)
+  genes$seqnames <- normalize_range_seqnames(genes$seqnames)
+  genes$start <- suppressWarnings(as.integer(genes$start))
+  genes$end <- suppressWarnings(as.integer(genes$end))
+  genes$strand <- as.character(genes$strand)
+  genes <- genes[!is.na(genes$start) & !is.na(genes$end) & nzchar(genes$gene_id), , drop = FALSE]
+  flip <- genes$start > genes$end
+  if (any(flip)) {
+    old_start <- genes$start[flip]
+    genes$start[flip] <- genes$end[flip]
+    genes$end[flip] <- old_start
+  }
+  genes[!duplicated(genes$gene_id), , drop = FALSE]
+}
+
+load_tair_te_ranges <- function(te_file = DEFAULT_TAIR_TE_URL) {
+   te <- as.data.frame(read_any_table(te_file, delim = "\t"), check.names = FALSE)
+   te$seqnames <- paste0("chr", sub(".*AT([0-9])TE.*", "\\1", te$Transposon_Name))
+#   id_col <- first_existing_col(te, c("Transposon_Name", "TE_id", "te_id", "ID", "Name"))
+#   family_col <- first_existing_col(te, c("Transposon_Family", "TE_Family", "family"))
+#   super_col <- first_existing_col(te, c("Transposon_Super_Family", "TE_Super_Family", "superfamily", "super_family"))
+#   chr_col <- first_existing_col(te, c("seqnames", "Seqnames", "chromosome", "Chromosome", "chr", "Chr", "Transposon_Chromosome", "Transposon_chr", "Transposon_Chr"))
+#   start_col <- first_existing_col(te, c("start", "Start", "Transposon_min_Start", "Transposon_Start", "min_Start", "Minimum_Start"))
+#   end_col <- first_existing_col(te, c("end", "End", "Transposon_max_End", "Transposon_End", "max_End", "Maximum_End"))
+  id_col <- "Transposon_Name"
+  family_col <- "Transposon_Family"
+  super_col <- "Transposon_Super_Family"
+  chr_col <- "seqnames"
+  start_col <- "Transposon_min_Start"
+  end_col <- "Transposon_max_End"
+  selected_cols <- list(
+    "TE id" = id_col,
+    "TE family" = family_col,
+    "TE super-family" = super_col,
+    "chromosome/seqnames" = chr_col,
+    "start" = start_col,
+    "end" = end_col
+  )
+  missing_cols <- names(selected_cols)[vapply(selected_cols, is.null, logical(1))]
+  if (length(missing_cols) > 0) {
+    stop(
+      "TAIR10 TE file is missing required range columns: ",
+      paste(missing_cols, collapse = ", "),
+      ". Available columns: ",
+      paste(names(te), collapse = ", ")
+    )
+  }
+  out <- data.frame(
+    TE_id = trimws(as.character(te[[id_col]])),
+    TE_family = trimws(as.character(te[[family_col]])),
+    TE_super_family = trimws(as.character(te[[super_col]])),
+    seqnames = normalize_range_seqnames(te[[chr_col]]),
+    TE_start = suppressWarnings(as.integer(te[[start_col]])),
+    TE_end = suppressWarnings(as.integer(te[[end_col]])),
+    stringsAsFactors = FALSE
+  )
+  out <- out[!is.na(out$TE_start) & !is.na(out$TE_end) & nzchar(out$TE_id), , drop = FALSE]
+  flip <- out$TE_start > out$TE_end
+  if (any(flip)) {
+    old_start <- out$TE_start[flip]
+    out$TE_start[flip] <- out$TE_end[flip]
+    out$TE_end[flip] <- old_start
+  }
+  out
+}
+
+make_gene_overlap_windows <- function(gene_ranges, region = c("upstream", "downstream", "both", "gene_body"),
+                                      flank_bp = 2000) {
+  region <- match.arg(region)
+  flank_bp <- suppressWarnings(as.integer(flank_bp %||% 2000))
+  if (!is.finite(flank_bp) || is.na(flank_bp) || flank_bp < 0) flank_bp <- 2000
+  genes <- as.data.frame(gene_ranges, check.names = FALSE)
+  make_one <- function(label) {
+    out <- genes
+    out$overlap_region <- label
+    plus <- out$strand != "-"
+    if (identical(label, "gene_body")) {
+      out$window_start <- out$start
+      out$window_end <- out$end
+    } else if (identical(label, "upstream")) {
+      out$window_start <- ifelse(plus, out$start - flank_bp, out$end + 1)
+      out$window_end <- ifelse(plus, out$start - 1, out$end + flank_bp)
+    } else {
+      out$window_start <- ifelse(plus, out$end + 1, out$start - flank_bp)
+      out$window_end <- ifelse(plus, out$end + flank_bp, out$start - 1)
+    }
+    out$window_start <- pmax(1L, as.integer(out$window_start))
+    out$window_end <- pmax(1L, as.integer(out$window_end))
+    out[out$window_start <= out$window_end, , drop = FALSE]
+  }
+  if (identical(region, "both")) return(rbind(make_one("upstream"), make_one("downstream")))
+  make_one(region)
+}
+
+empty_te_overlap_table <- function() {
+  data.frame(
+    gene_id = character(),
+    seqnames = character(),
+    gene_start = integer(),
+    gene_end = integer(),
+    strand = character(),
+    overlap_region = character(),
+    window_start = integer(),
+    window_end = integer(),
+    TE_id = character(),
+    TE_family = character(),
+    TE_super_family = character(),
+    TE_start = integer(),
+    TE_end = integer(),
+    overlap_start = integer(),
+    overlap_end = integer(),
+    overlap_width = integer(),
+    stringsAsFactors = FALSE
+  )
+}
+
+find_te_gene_range_overlaps <- function(gene_windows, te_ranges) {
+  if (is.null(gene_windows) || nrow(gene_windows) == 0 || is.null(te_ranges) || nrow(te_ranges) == 0) return(empty_te_overlap_table())
+  if (requireNamespace("IRanges", quietly = TRUE)) {
+    rows <- list()
+    idx <- 1L
+    for (chr in intersect(unique(gene_windows$seqnames), unique(te_ranges$seqnames))) {
+      g <- gene_windows[gene_windows$seqnames == chr, , drop = FALSE]
+      te <- te_ranges[te_ranges$seqnames == chr, , drop = FALSE]
+      if (nrow(g) == 0 || nrow(te) == 0) next
+      hits <- IRanges::findOverlaps(
+        IRanges::IRanges(start = g$window_start, end = g$window_end),
+        IRanges::IRanges(start = te$TE_start, end = te$TE_end)
+      )
+      if (length(hits) == 0) next
+      qi <- S4Vectors::queryHits(hits)
+      si <- S4Vectors::subjectHits(hits)
+      rows[[idx]] <- data.frame(
+        gene_id = g$gene_id[qi],
+        seqnames = chr,
+        gene_start = g$start[qi],
+        gene_end = g$end[qi],
+        strand = g$strand[qi],
+        overlap_region = g$overlap_region[qi],
+        window_start = g$window_start[qi],
+        window_end = g$window_end[qi],
+        TE_id = te$TE_id[si],
+        TE_family = te$TE_family[si],
+        TE_super_family = te$TE_super_family[si],
+        TE_start = te$TE_start[si],
+        TE_end = te$TE_end[si],
+        overlap_start = pmax(g$window_start[qi], te$TE_start[si]),
+        overlap_end = pmin(g$window_end[qi], te$TE_end[si]),
+        stringsAsFactors = FALSE
+      )
+      rows[[idx]]$overlap_width <- pmax(0L, rows[[idx]]$overlap_end - rows[[idx]]$overlap_start + 1L)
+      idx <- idx + 1L
+    }
+    out <- do.call(rbind, rows)
+    if (is.null(out)) return(empty_te_overlap_table())
+    rownames(out) <- NULL
+    return(out)
+  }
+  rows <- list()
+  idx <- 1L
+  for (chr in intersect(unique(gene_windows$seqnames), unique(te_ranges$seqnames))) {
+    g <- gene_windows[gene_windows$seqnames == chr, , drop = FALSE]
+    te <- te_ranges[te_ranges$seqnames == chr, , drop = FALSE]
+    for (i in seq_len(nrow(g))) {
+      hit <- te$TE_start <= g$window_end[i] & te$TE_end >= g$window_start[i]
+      if (!any(hit)) next
+      h <- te[hit, , drop = FALSE]
+      rows[[idx]] <- data.frame(
+        gene_id = g$gene_id[i],
+        seqnames = chr,
+        gene_start = g$start[i],
+        gene_end = g$end[i],
+        strand = g$strand[i],
+        overlap_region = g$overlap_region[i],
+        window_start = g$window_start[i],
+        window_end = g$window_end[i],
+        TE_id = h$TE_id,
+        TE_family = h$TE_family,
+        TE_super_family = h$TE_super_family,
+        TE_start = h$TE_start,
+        TE_end = h$TE_end,
+        overlap_start = pmax(g$window_start[i], h$TE_start),
+        overlap_end = pmin(g$window_end[i], h$TE_end),
+        stringsAsFactors = FALSE
+      )
+      rows[[idx]]$overlap_width <- pmax(0L, rows[[idx]]$overlap_end - rows[[idx]]$overlap_start + 1L)
+      idx <- idx + 1L
+    }
+  }
+  out <- do.call(rbind, rows)
+  if (is.null(out)) return(empty_te_overlap_table())
+  rownames(out) <- NULL
+  out
+}
+
+keep_genes_with_both_region_overlaps <- function(overlaps) {
+  if (is.null(overlaps) || nrow(overlaps) == 0 || !"overlap_region" %in% names(overlaps)) return(overlaps)
+  regions_by_gene <- split(as.character(overlaps$overlap_region), overlaps$gene_id)
+  keep_genes <- names(regions_by_gene)[vapply(regions_by_gene, function(x) {
+    all(c("upstream", "downstream") %in% unique(x))
+  }, logical(1))]
+  overlaps[overlaps$gene_id %in% keep_genes, , drop = FALSE]
+}
+
+collapse_unique_values <- function(x) {
+  x <- unique(as.character(x[!is.na(x) & nzchar(as.character(x))]))
+  paste(sort(x), collapse = "; ")
+}
+
+make_overlapped_te_gene_table <- function(de_df, overlaps, alpha = 0.05, lfc_cutoff = 1,
+                                          direction = c("all", "up", "down")) {
+  direction <- match.arg(direction)
+  de <- classify_de(de_df, alpha = alpha, lfc_cutoff = lfc_cutoff)
+  de$gene_id <- clean_tair_id(de$gene_id)
+  if (direction == "up") de <- de[de$DE_class == "up", , drop = FALSE]
+  if (direction == "down") de <- de[de$DE_class == "down", , drop = FALSE]
+  if (direction == "all") de <- de[de$DE_class %in% c("up", "down"), , drop = FALSE]
+  de <- de[!duplicated(de$gene_id), , drop = FALSE]
+  if (nrow(de) == 0 || is.null(overlaps) || nrow(overlaps) == 0) return(de[0, , drop = FALSE])
+  overlaps <- overlaps[overlaps$gene_id %in% de$gene_id, , drop = FALSE]
+  if (nrow(overlaps) == 0) return(de[0, , drop = FALSE])
+  split_ov <- split(overlaps, overlaps$gene_id)
+  ann <- do.call(rbind, lapply(names(split_ov), function(gene) {
+    x <- split_ov[[gene]]
+    data.frame(
+      gene_id = gene,
+      overlapped_TE_ids = collapse_unique_values(x$TE_id),
+      overlapped_TE_families = collapse_unique_values(x$TE_family),
+      overlapped_TE_super_families = collapse_unique_values(x$TE_super_family),
+      overlap_regions = collapse_unique_values(x$overlap_region),
+      overlapped_TE_count = length(unique(x$TE_id)),
+      total_overlap_bp = sum(x$overlap_width, na.rm = TRUE),
+      stringsAsFactors = FALSE
+    )
+  }))
+  out <- merge(ann, de, by = "gene_id", all.x = TRUE, sort = FALSE)
+  order_cols <- intersect(c("padj", "pValue"), names(out))
+  if (length(order_cols) > 0) {
+    ord <- do.call(order, c(out[order_cols], list(na.last = TRUE)))
+    out <- out[ord, , drop = FALSE]
+  }
+  out <- out[!duplicated(out$gene_id), , drop = FALSE]
+  front <- c(
+    "gene_id",
+    "Symbol",
+    "Short_description",
+    "overlapped_TE_ids",
+    "overlapped_TE_families",
+    "overlapped_TE_super_families",
+    "overlap_regions",
+    "overlapped_TE_count",
+    "total_overlap_bp"
+  )
+  front <- intersect(front, names(out))
+  out[, c(front, setdiff(names(out), front)), drop = FALSE]
+}
+
 # Cached description table – loaded once per session
+make_overlapped_te_family_counts <- function(overlaps) {
+  if (is.null(overlaps) || nrow(overlaps) == 0) return(data.frame())
+  keys <- unique(overlaps[, c("TE_family", "TE_super_family", "TE_id", "gene_id"), drop = FALSE])
+  pairs <- unique(keys[, c("TE_family", "TE_super_family"), drop = FALSE])
+  out <- do.call(rbind, lapply(seq_len(nrow(pairs)), function(i) {
+    hit <- keys$TE_family == pairs$TE_family[i] & keys$TE_super_family == pairs$TE_super_family[i]
+    data.frame(
+      TE_family = pairs$TE_family[i],
+      TE_super_family = pairs$TE_super_family[i],
+      TE_count = length(unique(keys$TE_id[hit])),
+      gene_count = length(unique(keys$gene_id[hit])),
+      stringsAsFactors = FALSE
+    )
+  }))
+  out[order(out$TE_count, out$gene_count, decreasing = TRUE), , drop = FALSE]
+}
+
+plot_overlapped_te_family_counts <- function(count_df, top_n = 20, plot_theme = "classic", font_family = "serif",
+                                             color_palette = "default") {
+  if (is.null(count_df) || nrow(count_df) == 0) return(NULL)
+  top_n <- suppressWarnings(as.integer(top_n %||% 20))
+  if (!is.finite(top_n) || is.na(top_n) || top_n < 1) top_n <- 20
+  d <- head(count_df[order(count_df$TE_count, count_df$gene_count, decreasing = TRUE), , drop = FALSE], top_n)
+  d$TE_family <- factor(d$TE_family, levels = rev(d$TE_family))
+  p <- ggplot2::ggplot(d, ggplot2::aes(x = TE_family, y = TE_count, fill = TE_super_family)) +
+    ggplot2::geom_col(alpha = 0.88) +
+    ggplot2::coord_flip() +
+    plot_theme_choice(plot_theme, base_size = 12, font_family = font_family) +
+    ggplot2::labs(x = NULL, y = "Overlapped TE count", fill = "TE super-family", title = "Overlapped TE families")
+  levels_sf <- unique(as.character(d$TE_super_family))
+  cols <- pca_palette_values(length(levels_sf), color_palette)
+  if (!is.null(cols)) {
+    names(cols) <- levels_sf
+    p <- p + ggplot2::scale_fill_manual(values = cols, na.value = "grey70")
+  }
+  p
+}
+
+make_te_family_enrichment <- function(overlaps, te_ranges, background = c("all_tair10", "region_aware"),
+                                      background_overlaps = NULL) {
+  background <- match.arg(background)
+  empty <- data.frame(
+    TE_family = character(),
+    TE_super_family = character(),
+    observed_TE_count = integer(),
+    background_TE_count = integer(),
+    expected_TE_count = numeric(),
+    fold_enrichment = numeric(),
+    log2_enrichment = numeric(),
+    pvalue = numeric(),
+    padj = numeric(),
+    background = character(),
+    stringsAsFactors = FALSE
+  )
+  if (is.null(overlaps) || nrow(overlaps) == 0 || is.null(te_ranges) || nrow(te_ranges) == 0) return(empty)
+
+  observed <- unique(overlaps[, c("TE_id", "TE_family", "TE_super_family"), drop = FALSE])
+  observed <- observed[!is.na(observed$TE_id) & nzchar(observed$TE_id), , drop = FALSE]
+  if (nrow(observed) == 0) return(empty)
+
+  if (identical(background, "region_aware")) {
+    if (is.null(background_overlaps) || nrow(background_overlaps) == 0) return(empty)
+    bg <- unique(background_overlaps[, c("TE_id", "TE_family", "TE_super_family"), drop = FALSE])
+  } else {
+    bg <- unique(te_ranges[, c("TE_id", "TE_family", "TE_super_family"), drop = FALSE])
+  }
+  bg <- bg[!is.na(bg$TE_id) & nzchar(bg$TE_id), , drop = FALSE]
+  if (nrow(bg) == 0) return(empty)
+
+  observed <- observed[observed$TE_id %in% bg$TE_id, , drop = FALSE]
+  if (nrow(observed) == 0) return(empty)
+  observed_total <- length(unique(observed$TE_id))
+  background_total <- length(unique(bg$TE_id))
+  families <- sort(unique(observed$TE_family))
+  families <- families[!is.na(families) & nzchar(families)]
+  if (length(families) == 0) return(empty)
+
+  out <- do.call(rbind, lapply(families, function(fam) {
+    obs_ids <- unique(observed$TE_id[observed$TE_family == fam])
+    bg_ids <- unique(bg$TE_id[bg$TE_family == fam])
+    a <- length(obs_ids)
+    b <- max(length(bg_ids) - a, 0L)
+    c_other <- observed_total - a
+    d <- max((background_total - length(bg_ids)) - c_other, 0L)
+    mat <- matrix(c(a, b, c_other, d), nrow = 2, byrow = TRUE)
+    pval <- tryCatch(stats::fisher.test(mat, alternative = "greater")$p.value, error = function(e) NA_real_)
+    expected <- observed_total * length(bg_ids) / background_total
+    fold <- (a + 0.5) / (expected + 0.5)
+    sf <- bg$TE_super_family[bg$TE_family == fam]
+    sf <- sf[!is.na(sf) & nzchar(sf)]
+    data.frame(
+      TE_family = fam,
+      TE_super_family = if (length(sf) > 0) names(sort(table(sf), decreasing = TRUE))[1] else "",
+      observed_TE_count = a,
+      background_TE_count = length(bg_ids),
+      expected_TE_count = expected,
+      fold_enrichment = fold,
+      log2_enrichment = log2(fold),
+      pvalue = pval,
+      stringsAsFactors = FALSE
+    )
+  }))
+  out$padj <- stats::p.adjust(out$pvalue, method = "BH")
+  out$background <- if (identical(background, "region_aware")) "Region-aware TEs" else "All TAIR10 TEs"
+  out[order(out$padj, -out$observed_TE_count, na.last = TRUE), , drop = FALSE]
+}
+
+plot_te_family_enrichment <- function(enrichment_df, top_n = 20, padj_cutoff = 0.05,
+                                      plot_theme = "classic", font_family = "serif") {
+  if (is.null(enrichment_df) || nrow(enrichment_df) == 0) return(NULL)
+  top_n <- suppressWarnings(as.integer(top_n %||% 20))
+  if (!is.finite(top_n) || is.na(top_n) || top_n < 1) top_n <- 20
+  d <- enrichment_df[order(enrichment_df$padj, -enrichment_df$observed_TE_count, na.last = TRUE), , drop = FALSE]
+  d <- head(d, top_n)
+  d$neg_log10_padj <- -log10(pmax(d$padj, .Machine$double.xmin))
+  # d$Significant <- ifelse(!is.na(d$padj) & d$padj < padj_cutoff, "FDR < 0.05", "Not significant")
+  max_fdr <- max(d$neg_log10_padj, na.rm = TRUE)
+  d$TE_family <- factor(d$TE_family, levels = rev(d$TE_family))
+  d <- dplyr::filter(d, neg_log10_padj > (-log10(padj_cutoff)))
+  if (nrow(d) == 0) return(NULL)
+  fdr_breaks <- unique(round(c(-log10(padj_cutoff), max_fdr), 2))
+  fdr_breaks <- fdr_breaks[is.finite(fdr_breaks)]
+  if (length(fdr_breaks) == 0) fdr_breaks <- NULL
+  fdr_labels <- if (is.null(fdr_breaks)) ggplot2::waiver() else fdr_breaks
+  ggplot2::ggplot(d, ggplot2::aes(x = log2_enrichment, y = TE_family)) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.3, color = "grey55") +
+    ggplot2::geom_point(ggplot2::aes(size = observed_TE_count, color = neg_log10_padj), # , shape = Significant),
+    alpha = 0.9) +
+    ggplot2::scale_color_gradient(low = "#cfcfcf", high = "#e6ac6a", name = "-log10(FDR)", breaks = fdr_breaks, labels = fdr_labels) +
+    ggplot2::scale_size_continuous(
+      name = "Observed TEs",
+      breaks = pretty(d$observed_TE_count, n = 2)
+    ) +
+    # ggplot2::scale_shape_manual(values = c("FDR < 0.05" = 16, "Not significant" = 1), name = NULL) +
+    plot_theme_choice(plot_theme, base_size = 12, font_family = font_family) +
+    ggplot2::labs(
+      x = "log2 enrichment",
+      y = NULL,
+      size = "Observed TEs",
+      title = paste0("TE family vs ", unique(d$background)[1])
+    # # ) +
+    # # ggplot2::guides(
+    # # color = ggplot2::guide_colorbar(barheight = grid::unit(35, "pt"), barwidth = grid::unit(15, "pt")),
+    # #   size = ggplot2::guide_legend(keyheight = grid::unit(10, "pt"), override.aes = list(alpha = 0.9)),
+    # #   shape = ggplot2::guide_legend(keyheight = grid::unit(10, "pt"))
+    # # ) +
+    # # ggplot2::theme(
+    # #   legend.key.height = grid::unit(10, "pt"),
+    # #   legend.key.width = grid::unit(10, "pt"),
+    # #   legend.spacing.y = grid::unit(1, "pt"),
+    # #   legend.margin = ggplot2::margin(0, 0, 0, 0),
+    # #   legend.box.spacing = grid::unit(2, "pt"),
+    # #   legend.text = ggplot2::element_text(size = 9),
+    # #   legend.title = ggplot2::element_text(size = 10)
+    )
+}
+
+run_overlapped_te_analysis <- function(de_df, region = c("upstream", "downstream", "both", "gene_body"),
+                                       flank_bp = 2000, direction = c("all", "up", "down"),
+                                       alpha = 0.05, lfc_cutoff = 1,
+                                       gene_ranges_file = DEFAULT_TAIR_GENE_RANGES_URL,
+                                       te_file = DEFAULT_TAIR_TE_URL,
+                                       include_tegs = TRUE) {
+  region <- match.arg(region)
+  direction <- match.arg(direction)
+  if (is.null(de_df) || nrow(de_df) == 0) stop("DE table is empty.")
+  # # de_source <- as.data.frame(de_df, check.names = FALSE)
+  de <- standardize_de_table(
+    de_df,
+    merge_default_description = FALSE,
+    keep_extra_cols = c("Symbol", "Short_description")
+  )
+  de$gene_id <- clean_tair_id(de$gene_id)
+  # # source_gene_col <- first_existing_col(de_source, c("gene_id", "GeneID", "TAIR", "locus_tag"))
+  # # source_annotation_cols <- intersect(c("Symbol", "Short_description"), names(de_source))
+  # # if (!is.null(source_gene_col) && length(source_annotation_cols) > 0) {
+  # #   source_ann <- de_source[, c(source_gene_col, source_annotation_cols), drop = FALSE]
+  # #   names(source_ann)[names(source_ann) == source_gene_col] <- "gene_id"
+  # #   source_ann$gene_id <- clean_tair_id(source_ann$gene_id)
+  # #   source_ann <- source_ann[!duplicated(source_ann$gene_id), , drop = FALSE]
+  # #   de <- merge(de, source_ann, by = "gene_id", all.x = TRUE, sort = FALSE)
+  # # }
+  # # missing_annotation_cols <- setdiff(c("Symbol", "Short_description"), names(de))
+  # # if (length(missing_annotation_cols) > 0) {
+  # #   de <- merge_with_description(de)
+  # # }
+  de <- classify_de(de, alpha = alpha, lfc_cutoff = lfc_cutoff)
+  if (direction == "up") deg <- de[de$DE_class == "up", , drop = FALSE]
+  if (direction == "down") deg <- de[de$DE_class == "down", , drop = FALSE]
+  if (direction == "all") deg <- de[de$DE_class %in% c("up", "down"), , drop = FALSE]
+  if (nrow(deg) == 0) stop("No DEGs match the selected direction and thresholds.")
+
+  all_gene_ranges <- load_tair_gene_ranges(gene_ranges_file)
+  if (!isTRUE(include_tegs) && "type" %in% names(all_gene_ranges)) {
+    all_gene_ranges <- all_gene_ranges[tolower(trimws(as.character(all_gene_ranges$type))) != "transposable_element_gene", , drop = FALSE]
+  }
+  genes <- all_gene_ranges[all_gene_ranges$gene_id %in% unique(deg$gene_id), , drop = FALSE]
+  if (nrow(genes) == 0) stop("No selected DEGs matched TAIR gene ranges.")
+  te_ranges <- load_tair_te_ranges(te_file)
+  windows <- make_gene_overlap_windows(genes, region = region, flank_bp = flank_bp)
+  overlaps <- find_te_gene_range_overlaps(windows, te_ranges)
+  if (nrow(overlaps) > 0) {
+    overlaps <- overlaps[overlaps$gene_id %in% unique(deg$gene_id), , drop = FALSE]
+    if (identical(region, "both")) {
+      overlaps <- keep_genes_with_both_region_overlaps(overlaps)
+    }
+  }
+  gene_table <- make_overlapped_te_gene_table(de, overlaps, alpha = alpha, lfc_cutoff = lfc_cutoff, direction = direction)
+  family_counts <- make_overlapped_te_family_counts(overlaps)
+  list(overlaps = overlaps, gene_table = gene_table, family_counts = family_counts,
+       te_ranges = te_ranges, all_gene_ranges = all_gene_ranges,
+       region = region, flank_bp = flank_bp, direction = direction)
+}
+
 .desc_cache <- NULL
 .desc_cache_path <- NULL
 
@@ -310,7 +793,7 @@ merge_with_description <- function(de_df, desc = NULL, replace_gene_id = FALSE) 
   merged
 }
 
-standardize_de_table <- function(df, description_df = NULL, merge_default_description = TRUE) {
+standardize_de_table <- function(df, description_df = NULL, merge_default_description = TRUE, keep_extra_cols = character()) {
   df <- as.data.frame(df, check.names = FALSE)
 
   gene_col <- first_existing_col(df, c("gene_id", "GeneID", "TAIR", "locus_tag"))
@@ -337,7 +820,7 @@ standardize_de_table <- function(df, description_df = NULL, merge_default_descri
   if (!is.null(base_col) && base_col != "baseMean") names(df)[names(df) == base_col] <- "baseMean"
 
   # Drop heavy extra columns from uploaded CSVs to save memory
-  keep_cols <- c("gene_id", "log2FoldChange", "padj", "pValue", "baseMean")
+  keep_cols <- c("gene_id", "log2FoldChange", "padj", "pValue", "baseMean", keep_extra_cols)
   df <- df[, intersect(keep_cols, names(df)), drop = FALSE]
 
   df$gene_id <- clean_gene_id(df$gene_id)
@@ -483,6 +966,8 @@ make_gene_norm_counts_boxplot <- function(norm_counts, coldata, gene_id,
 
 pca_palette_values <- function(n, palette = "default") {
   if (is.null(palette) || !nzchar(palette) || palette == "default") return(NULL)
+  if (n <= 0) return(character())
+  if (identical(tolower(palette), "rainbow")) return(grDevices::rainbow(n))
   base_cols <- switch(tolower(palette),
     okabe_ito = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#000000"),
     set1 = c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00", "#FFFF33", "#A65628", "#F781BF", "#999999"),
@@ -2721,8 +3206,19 @@ make_abiotic_stress_plot <- function(stress_df, title = "Abiotic stress enrichme
 
 plot_revigo_data <- function(plot_df, title = "REVIGO-like semantic reduction",
                              color_palette = "set1", show_labels = TRUE,
-                             max_parent_labels = 8, plot_theme = "classic", font_family = "serif") {
+                             max_parent_labels = 8, parent_label_hjust = 0,
+                             parent_label_nudge_x = 0.15, parent_label_segment_size = 0.3,
+                             parent_label_colored = FALSE, parent_label_size = 3,
+                             plot_theme = "classic", font_family = "serif") {
   if (is.null(plot_df) || nrow(plot_df) == 0) stop("No REVIGO-like plot data available.")
+  parent_label_hjust <- suppressWarnings(as.numeric(parent_label_hjust %||% 0))
+  if (!is.finite(parent_label_hjust) || is.na(parent_label_hjust)) parent_label_hjust <- 0
+  parent_label_nudge_x <- suppressWarnings(as.numeric(parent_label_nudge_x %||% 0.15))
+  if (!is.finite(parent_label_nudge_x) || is.na(parent_label_nudge_x)) parent_label_nudge_x <- 0.15
+  parent_label_segment_size <- suppressWarnings(as.numeric(parent_label_segment_size %||% 0.3))
+  if (!is.finite(parent_label_segment_size) || is.na(parent_label_segment_size)) parent_label_segment_size <- 0.3
+  parent_label_size <- suppressWarnings(as.numeric(parent_label_size %||% 3))
+  if (!is.finite(parent_label_size) || is.na(parent_label_size)) parent_label_size <- 3
   plot_df <- plot_df[!is.na(plot_df$plot_X) & !is.na(plot_df$plot_Y), , drop = FALSE]
   if (nrow(plot_df) == 0) stop("REVIGO-like reduction produced no plottable terms.")
 
@@ -2776,17 +3272,22 @@ plot_revigo_data <- function(plot_df, title = "REVIGO-like semantic reduction",
       ylim = c(min(plot_df$plot_Y, na.rm = TRUE) - y_range / 10, max(plot_df$plot_Y, na.rm = TRUE) + y_range / 10)
     )
   if (isTRUE(show_labels) && nrow(label_df) > 0) {
-    p <- p + ggrepel::geom_text_repel(
+    label_layer_args <- list(
       ggplot2::aes(label = parentTerm),
       data = label_df,
       direction = "y",
-      hjust = 0,
+      hjust = parent_label_hjust,
+      nudge_x = x_range * parent_label_nudge_x,
       fontface = "bold",
-      size = 3,
-      colour = "black",
-      xlim = c(max(plot_df$plot_X, na.rm = TRUE) + x_range / 7.5, Inf),
+      family = font_family,
+      size = parent_label_size,
+      segment.size = parent_label_segment_size,
+      segment.colour = "grey45",
+      xlim = c(max(plot_df$plot_X, na.rm = TRUE) + x_range * parent_label_nudge_x, Inf),
       show.legend = FALSE
     )
+    if (!isTRUE(parent_label_colored)) label_layer_args$colour <- "black"
+    p <- p + do.call(ggrepel::geom_text_repel, label_layer_args)
   }
   list(plot = p, plot_data = plot_df, legend = data.frame(parentTerm = parent_terms, hex_col = unname(cols), stringsAsFactors = FALSE))
 }
@@ -2794,7 +3295,18 @@ plot_revigo_data <- function(plot_df, title = "REVIGO-like semantic reduction",
 make_revigo_scatter_plot <- function(simMatrix, reducedTerms, title = "REVIGO-like semantic reduction",
                                      algorithm = "umap", color_palette = "set1",
                                      show_labels = TRUE, max_parent_labels = 8,
+                                     parent_label_hjust = 0,
+                                     parent_label_nudge_x = 0.15, parent_label_segment_size = 0.3,
+                                     parent_label_colored = FALSE, parent_label_size = 3,
                                      plot_theme = "classic", font_family = "serif") {
+  parent_label_hjust <- suppressWarnings(as.numeric(parent_label_hjust %||% 0))
+  if (!is.finite(parent_label_hjust) || is.na(parent_label_hjust)) parent_label_hjust <- 0
+  parent_label_nudge_x <- suppressWarnings(as.numeric(parent_label_nudge_x %||% 0.15))
+  if (!is.finite(parent_label_nudge_x) || is.na(parent_label_nudge_x)) parent_label_nudge_x <- 0.15
+  parent_label_segment_size <- suppressWarnings(as.numeric(parent_label_segment_size %||% 0.3))
+  if (!is.finite(parent_label_segment_size) || is.na(parent_label_segment_size)) parent_label_segment_size <- 0.3
+  parent_label_size <- suppressWarnings(as.numeric(parent_label_size %||% 3))
+  if (!is.finite(parent_label_size) || is.na(parent_label_size)) parent_label_size <- 3
   algorithm <- match.arg(tolower(algorithm), c("umap", "pca"))
   scatter_data <- tryCatch({
     rrvgo::scatterPlot(simMatrix, reducedTerms, algorithm = algorithm)$data
@@ -2868,17 +3380,22 @@ make_revigo_scatter_plot <- function(simMatrix, reducedTerms, title = "REVIGO-li
       ylim = c(min(plot_df$plot_Y, na.rm = TRUE) - y_range / 10, max(plot_df$plot_Y, na.rm = TRUE) + y_range / 10)
     )
   if (isTRUE(show_labels) && nrow(label_df) > 0) {
-    p <- p + ggrepel::geom_text_repel(
+    label_layer_args <- list(
       ggplot2::aes(label = parentTerm),
       data = label_df,
       direction = "y",
-      hjust = 0,
+      hjust = parent_label_hjust,
+      nudge_x = x_range * parent_label_nudge_x,
       fontface = "bold",
-      size = 3,
-      colour = "black",
-      xlim = c(max(plot_df$plot_X, na.rm = TRUE) + x_range / 7.5, Inf),
+      family = font_family,
+      size = parent_label_size,
+      segment.size = parent_label_segment_size,
+      segment.colour = "grey45",
+      xlim = c(max(plot_df$plot_X, na.rm = TRUE) + x_range * parent_label_nudge_x, Inf),
       show.legend = FALSE
     )
+    if (!isTRUE(parent_label_colored)) label_layer_args$colour <- "black"
+    p <- p + do.call(ggrepel::geom_text_repel, label_layer_args)
   }
   list(plot = p, plot_data = plot_df, legend = data.frame(parentTerm = parent_terms, hex_col = unname(cols), stringsAsFactors = FALSE))
 }
@@ -2886,7 +3403,9 @@ make_revigo_scatter_plot <- function(simMatrix, reducedTerms, title = "REVIGO-li
 run_rrvgo_reduce <- function(go_df, ontology = "BP", top_n = 80, threshold = 0.7, title = "REVIGO-like semantic reduction",
                              orgdb = "org.At.tair.db", plot_theme = "classic", font_family = "serif",
                              algorithm = "umap", color_palette = "set1", show_labels = TRUE,
-                             max_parent_labels = 8) {
+                             max_parent_labels = 8, parent_label_hjust = 0,
+                             parent_label_nudge_x = 0.15, parent_label_segment_size = 0.3,
+                             parent_label_colored = FALSE, parent_label_size = 3) {
   required <- c("rrvgo", orgdb, "ggplot2", "ggrepel")
   missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) stop("Missing required packages: ", paste(missing, collapse = ", "))
@@ -2903,6 +3422,11 @@ run_rrvgo_reduce <- function(go_df, ontology = "BP", top_n = 80, threshold = 0.7
     color_palette = color_palette,
     show_labels = show_labels,
     max_parent_labels = max_parent_labels,
+    parent_label_hjust = parent_label_hjust,
+    parent_label_nudge_x = parent_label_nudge_x,
+    parent_label_segment_size = parent_label_segment_size,
+    parent_label_colored = parent_label_colored,
+    parent_label_size = parent_label_size,
     plot_theme = plot_theme,
     font_family = font_family
   )

@@ -1,4 +1,4 @@
-# RNA-seq Analysis Dashboard
+# ╭╯RNA-seq Analysis Dashboard
 
 A local R Shiny dashboard for RNA-seq differential expression analysis, count/quantification import, annotation building, dependency checks, and downstream visualization.
 
@@ -13,7 +13,7 @@ Plant's metabolism and molecular genetic lab, Prof. Rachel Amir group
 1. Install R for Windows, preferably R 4.2 or newer.
 2. Extract the project folder.
 3. First time: double-click `install.bat`.
-4. Later runs: double-click `RA_RNAseq_analysis_app.bat`.
+4. Later runs: double-click `RNAseq_analysis_app.bat`.
 
 If `Rscript.exe was not found in PATH`, add your R `bin` folder to PATH, usually:
 
@@ -35,7 +35,7 @@ Must include columns:
 | `log2FoldChange` | log2 fold change |
 | `padj` | adjusted p-value |
 
-If standard s are not found, the app treats the first three columns as `gene_id`, `log2FoldChange`, and `padj`.
+If standard column names are not found, the app treats the first three columns as `gene_id`, `log2FoldChange`, and `padj`.
 
 After loading the table, the app auto-detects common `gene_id` formats such as TAIR, Ensembl, RefSeq, Entrez, UniProt, and gene symbols, then updates the Gene ID type in the Organism annotations tab. You can still change it manually.
 
@@ -181,10 +181,20 @@ GO display cutoff, ontology, and top-N controls appear in the sidebar only while
 
 ### TE Analysis
 
-- Arabidopsis-specific TE superfamily enrichment and TE volcano plots.
-- Uses default Arabidopsis annotation and TAIR10 TE metadata from GitHub:
+- Arabidopsis-specific TE workflows for transposable-element genes and DE genes overlapping nearby/gene-body TEs.
+- **TEGs Enrichment Analysis**: TE superfamily enrichment for transposable-element genes.
+- **TEGs Volcano Plot**: volcano plot for selected TE superfamilies.
+- **Overlapped TEs**: finds DE genes whose upstream, downstream, both-side, or gene-body ranges overlap TAIR10 TEs.
+- The Overlapped TEs tab shows:
+  - overlapped-gene volcano, filterable by TE family
+  - TE family count plot and downloadable family-count table
+  - TE family enrichment plot and downloadable enrichment table
+  - gene table with overlapped TE IDs, families, superfamilies, DE columns, and available annotation columns
+- TE family enrichment uses Fisher exact tests and can compare against either all TAIR10 TEs or region-aware TEs that overlap the same selected gene-region windows across all TAIR genes.
+- Uses default Arabidopsis annotation, TAIR10 TE metadata, and TAIR gene ranges from GitHub:
   - `https://github.com/Yo-yerush/RA_lab_db/raw/refs/heads/main/description_files/At_custom_description_file.csv.gz`
   - `https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/TAIR10_Transposable_Elements.txt`
+  - `https://raw.githubusercontent.com/Yo-yerush/RA_lab_db/refs/heads/main/description_files/TAIR_genes_short.csv`
 
 Human or other organism TE analysis requires a compatible TE-level annotation table or TE quantification output, such as RepeatMasker/TEtranscripts-derived families. Standard human Ensembl gene-level DE tables do not directly contain TE family assignments.
 
@@ -244,4 +254,4 @@ set "RSCRIPT=C:\Program Files\R\R-4.5.0\bin\Rscript.exe"
   - `diagnose_R_installation.bat` - checks common Windows R installation paths if the launchers cannot find `Rscript.exe`.
   - `description_files/` - optional local data files. Default Arabidopsis, human, E. coli K-12 MG1655 annotation tables and TAIR10 TE metadata are loaded from GitHub when internet is available.
 - `install.bat` - Windows first-run launcher that installs missing packages.
-- `RA_RNAseq_analysis_app.bat` - faster launcher for later runs.
+- `RNAseq_analysis_app.bat` - faster launcher for later runs.
