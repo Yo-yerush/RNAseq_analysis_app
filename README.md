@@ -198,10 +198,26 @@ GO display cutoff, ontology, and top-N controls appear in the sidebar only while
 
 Human or other organism TE analysis requires a compatible TE-level annotation table or TE quantification output, such as RepeatMasker/TEtranscripts-derived families. Standard human Ensembl gene-level DE tables do not directly contain TE family assignments.
 
+### Run All
+
+- Batch runner for exporting selected analyses into a timestamped `run_all_YYYYMMDD_HHMMSS` folder.
+- Select all available outputs, clear selections, or choose specific outputs by section:
+  - Core outputs: DE table, DE summary, normalized counts, Volcano, MA, and PCA.
+  - Enrichment: GO enrichment, REVIGO-like GO reduction, GO offspring summary, abiotic-stress GO enrichment, KEGG enrichment, Pathview, MSigDB/Hallmark, PMN enrichment, and PMN pathway-gene lookup.
+  - TE analysis: TEG enrichment, TEG volcano, and Overlapped TEs when Arabidopsis is selected.
+- Direction selector for enrichment-style analyses: upregulated only, downregulated only, up and down, all DE genes, or up/down/all.
+- Unavailable analyses are hidden based on the selected organism and current app state.
+- Outputs are organized into subfolders such as `Core_outputs`, `GO`, `KEGG`, `MSigDB_Hallmark`, `PMN`, and `TE_analysis`.
+- Each run writes `run_all_log.txt`. If one selected analysis fails, the batch continues and the error is recorded in the log.
+- Optional HTML report: when `rmarkdown`, `knitr`, and Pandoc are available, Run All creates `RNAseq_Run_All_Report.html` with plot images, CSV previews, file links, and short explanations for each analysis section.
+- Gene family enrichment is included for Arabidopsis and human when available, with outputs saved under `Gene_Families`.
+- The HTML report focuses on plots, analysis explanations, interpretation notes, and a parameter summary. Result tables are saved as CSV files in the output folders but are not embedded in the report.
+
 ### Log / Help
 
 - Session log.
-- Developer notes and app usage help.
+- Notes and app usage help.
+- Parameters sub-tab showing the current analysis settings. It starts from defaults and updates when controls are changed.
 - Dependencies sub-tab showing required R packages, installed status, versions, and which analyses are affected if a package is missing.
 
 ## Sidebar Controls
@@ -224,6 +240,7 @@ The upregulated/downregulated/not-significant colors are used across DE result p
 - UniProt annotation building requires internet access.
 - RefSeq GTF annotation building works from a local GTF file and does not require internet access after the GTF is downloaded.
 - PCA requires count data and is available only after running DESeq2 from quantification/count files.
+- Run All HTML reports require `rmarkdown`, `knitr`, and Pandoc. The installer installs the R packages, but Pandoc usually comes from RStudio, Quarto, or a standalone Pandoc installation. If Pandoc is missing, Run All still completes and skips the HTML report.
 - No results are saved automatically. Use the download buttons.
 
 ## Troubleshooting R Not Found
@@ -245,6 +262,8 @@ set "RSCRIPT=C:\Program Files\R\R-4.5.0\bin\Rscript.exe"
 - `app_140526/` - main app folder:
   - `app.R` - Shiny dashboard UI/server.
   - `R/helpers.R` - DESeq2 pipeline, DE result plots, GO/MSigDB helpers, annotation utilities.
+  - `R/run_all.R` - Batch Run output helpers, task execution, organized output folders, logging, and optional HTML report rendering.
+  - `R/run_all_report.Rmd` - R Markdown template used to render the optional Run All HTML report.
   - `R/build_uniprot_description_file.R` - UniProt annotation builder, including Ensembl/SYMBOL/ENTREZID/TAIR ID support through OrgDb where available.
   - `R/build_refseq_gftf_description_file.R` - RefSeq GTF annotation builder for NCBI-downloaded GTF files, including selectable `db_xref`/attribute ID sources.
   - `legacy_scripts/kegg_analysis.R` - KEGG enrichment and KEGG ID mapping helpers.

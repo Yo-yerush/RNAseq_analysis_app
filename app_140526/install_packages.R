@@ -5,7 +5,8 @@ options(repos = c(CRAN = "https://cloud.r-project.org"))
 
 cran_packages <- c(
   "shiny", "shinyFiles", "shinythemes", "DT", "ggplot2", "dplyr", "readr", "stringr", "tibble",
-  "tidyr", "ggrepel", "RColorBrewer", "pheatmap", "ashr", "msigdbr", "VennDiagram", "readxl"
+  "tidyr", "ggrepel", "RColorBrewer", "pheatmap", "ashr", "msigdbr", "VennDiagram", "readxl",
+  "rmarkdown", "knitr"
 )
 
 bioc_packages <- c(

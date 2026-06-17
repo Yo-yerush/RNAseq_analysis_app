@@ -21,6 +21,7 @@ options(shiny.maxRequestSize = 500 * 1024^2)
 source(file.path("R", "opening_yo.R"), local = TRUE)
 source(file.path("R", "helpers.R"), local = TRUE)
 source(file.path("R", "count_data_preview.R"), local = TRUE)
+source(file.path("R", "run_all.R"), local = TRUE)
 source(file.path("R", "build_uniprot_description_file.R"), local = TRUE)
 source(file.path("R", "build_refseq_gftf_description_file.R"), local = TRUE)
 source(file.path("legacy_scripts", "volcano_TEG_overlap_with_TE_families_RNAseq.R"), local = TRUE)
@@ -133,7 +134,7 @@ dependency_catalog <- data.frame(
     "topGO", "GO.db", "AnnotationDbi", "rrvgo", "ggrepel",
     "KEGGREST", "pathview", "msigdbr", "biomaRt",
     "RColorBrewer", "pheatmap", "stringi", "data.table",
-    "patchwork", "gridExtra", "futile.logger"
+    "patchwork", "gridExtra", "futile.logger", "rmarkdown", "knitr", "Pandoc"
   ),
   Needed_for = c(
     "Core R runtime. Nothing runs without R.",
@@ -170,7 +171,10 @@ dependency_catalog <- data.frame(
     "Faster RefSeq GTF/GFF3 table building when available.",
     "Optional side-by-side plot composition in legacy helpers.",
     "Fallback side-by-side plot composition in legacy helpers.",
-    "Optional VennDiagram message suppression."
+    "Optional VennDiagram message suppression.",
+    "Optional Run All HTML report rendering.",
+    "Optional Run All HTML report tables, images, and document rendering support.",
+    "Required by rmarkdown to render the optional Run All HTML report."
   ),
   If_missing = c(
     "Install R and make Rscript discoverable by the launcher.",
@@ -207,7 +211,10 @@ dependency_catalog <- data.frame(
     "RefSeq GTF/GFF3 table building falls back to base R and may be slower.",
     "Some side-by-side legacy plots will not combine.",
     "Fallback side-by-side legacy plots will not combine.",
-    "VennDiagram may print extra messages."
+    "VennDiagram may print extra messages.",
+    "Run All continues, but the HTML report is skipped.",
+    "Run All continues, but the HTML report is skipped.",
+    "Run All continues, but the HTML report is skipped. Install RStudio, Quarto, or Pandoc."
   ),
   stringsAsFactors = FALSE
 )
@@ -229,10 +236,24 @@ dependency_status_table <- function(extra_packages = character()) {
   }
 
   installed <- vapply(catalog$Package, function(pkg) {
-    if (identical(pkg, "R")) TRUE else requireNamespace(pkg, quietly = TRUE)
+    if (identical(pkg, "R")) TRUE
+    else if (identical(pkg, "Pandoc")) {
+      if (exists("run_all_prepare_pandoc", mode = "function")) isTRUE(run_all_prepare_pandoc())
+      else requireNamespace("rmarkdown", quietly = TRUE) && isTRUE(rmarkdown::pandoc_available())
+    }
+    else requireNamespace(pkg, quietly = TRUE)
   }, logical(1))
   version <- vapply(catalog$Package, function(pkg) {
     if (identical(pkg, "R")) return(paste(R.version$major, R.version$minor, sep = "."))
+    if (identical(pkg, "Pandoc")) {
+      pandoc_ok <- if (exists("run_all_prepare_pandoc", mode = "function")) {
+        isTRUE(run_all_prepare_pandoc())
+      } else {
+        requireNamespace("rmarkdown", quietly = TRUE) && isTRUE(rmarkdown::pandoc_available())
+      }
+      if (!isTRUE(pandoc_ok)) return("")
+      return(as.character(rmarkdown::pandoc_version()))
+    }
     if (!requireNamespace(pkg, quietly = TRUE)) return("")
     as.character(utils::packageVersion(pkg))
   }, character(1))
@@ -497,6 +518,14 @@ default_msigdb_species <- if ("Arabidopsis thaliana" %in% msigdb_species_choices
 msigdb_species_select_choices <- c("Not available for selected organism" = "", msigdb_species_choices)
 pmn_database_choices <- c("Not available for selected organism" = "", pmn_catalog_choices())
 
+app_project_root <- function() {
+  wd <- normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+  if (identical(basename(wd), "app_140526")) {
+    return(normalizePath(dirname(wd), winslash = "/", mustWork = FALSE))
+  }
+  wd
+}
+
 ui <- fluidPage(
   theme = shinythemes::shinytheme("united"),
   tags$style(HTML("
@@ -738,8 +767,8 @@ ui <- fluidPage(
         sliderInput("grp_plot_height", "Plot height (px)", min = 200, max = 1200, value = 200, step = 50)
       ),
       conditionalPanel("input.tabs == 'KEGG'",
-        sliderInput("kegg_plot_width",  "Plot width (px)",  min = 200, max = 1600, value = 850, step = 50),
-        sliderInput("kegg_plot_height", "Plot height (px)", min = 200, max = 1200, value = 350, step = 50)
+        sliderInput("kegg_plot_width",  "Plot width (px)",  min = 200, max = 1600, value = 1000, step = 50),
+        sliderInput("kegg_plot_height", "Plot height (px)", min = 200, max = 1200, value = 400, step = 50)
       ),
       conditionalPanel("input.tabs == 'PMN (plants)'",
         sliderInput("pmn_plot_width",  "Plot width (px)",  min = 200, max = 1600, value = 550, step = 50),
@@ -1048,7 +1077,7 @@ ui <- fluidPage(
                 column(3, checkboxInput("revigo_show_labels", "Show parent labels", value = TRUE)),
                 column(3, numericInput("revigo_parent_label_count", "Parent labels to show", value = 8, min = 0, max = 100, step = 1)),
                 column(3, numericInput("revigo_parent_label_hjust", "Parent label hjust", value = 0, min = -3, max = 3, step = 0.1)),
-                column(3, numericInput("revigo_parent_label_nudge_x", "Parent label x offset", value = 0.15, min = -1, max = 2, step = 0.05))
+                column(3, numericInput("revigo_parent_label_nudge_x", "Parent label x offset", value = 0.2, min = -1, max = 2, step = 0.05))
               ),
               fluidRow(
                 column(3, numericInput("revigo_parent_label_segment_size", "Connector width", value = 0.3, min = 0, max = 2, step = 0.1)),
@@ -1446,6 +1475,61 @@ ui <- fluidPage(
           )
         ),
 
+        tabPanel("Run All",
+          wellPanel(
+            h4("Batch Run"),
+            div(class = "muted", "Before using Run All, load the DE/count data, choose organism annotations, set Gene ID type, and configure thresholds/options in the normal tabs. Run All uses the current settings."),
+            tags$hr(),
+            fluidRow(
+              column(4,
+                h4("Core outputs"),
+                uiOutput("run_all_core_ui")
+              ),
+              column(4,
+                h4("Enrichment"),
+                uiOutput("run_all_enrichment_ui")
+              ),
+              column(4,
+                h4("TE analysis (At)"),
+                uiOutput("run_all_te_ui")
+              )
+            ),
+            fluidRow(
+              column(4,
+                selectInput("run_all_direction_mode", "Direction for enrichment runs",
+                  choices = c(
+                    "Upregulated only" = "up",
+                    "Downregulated only" = "down",
+                    "Upregulated and downregulated" = "up_down",
+                    "All DE genes" = "all",
+                    "Up, down, and all DE genes" = "up_down_all"
+                  ),
+                  selected = "up_down"
+                )
+              ),
+              column(4, br(), actionButton("run_all_select_all", "Select all available", class = "btn-default", style = "width:100%;")),
+              column(4, br(), actionButton("run_all_clear_all", "Clear selections", class = "btn-default", style = "width:100%;"))
+            ),
+            tags$hr(),
+            fluidRow(
+              column(3, shinyDirButton("choose_run_all_dir", "Choose output folder", "Select a folder")),
+              column(6, textInput("run_all_output_path", "Output folder path", # value = app_project_root(),
+              # placeholder = "Paste or type a folder path")),
+              placeholder = app_project_root())),
+              column(3, selectInput("run_all_image_format", "Image format", choices = c("PNG" = "png", "SVG" = "svg", "PDF" = "pdf"), selected = "svg"))
+            ),
+            fluidRow(
+              column(4, checkboxInput("run_all_render_report", "Create HTML report if R Markdown is available", value = TRUE))
+            ),
+            tags$hr(),
+            div(style = "margin-top: 10px;",
+              actionButton("run_all_btn", "Run All", class = "btn-success")
+            )
+          ),
+          h4("Run All Log"),
+          verbatimTextOutput("run_all_log")
+        ),
+
         tabPanel("Log / Help",
           tabsetPanel(
             tabPanel("Log",
@@ -1499,6 +1583,12 @@ ui <- fluidPage(
               #   tags$li(strong("Do not break existing behavior: "), "Keep Arabidopsis TAIR workflows working while adding human/other organism support. Avoid changing input IDs unless all server references are updated.")
               # )
             ),
+            tabPanel("Parameters",
+              br(),
+              h4("Current Parameters"),
+              div(class = "muted", "This table shows the current app settings. It starts with defaults and updates when controls are changed."),
+              DTOutput("parameters_table")
+            ),
             tabPanel("Dependencies",
               br(),
               h4("Installed Dependencies"),
@@ -1515,6 +1605,7 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   volumes <- shinyFiles::getVolumes()()
   shinyFiles::shinyDirChoose(input, "choose_rsem_dir", roots = volumes, session = session)
+  shinyFiles::shinyDirChoose(input, "choose_run_all_dir", roots = volumes, session = session)
 
   rv <- reactiveValues(
     de_base = NULL,
@@ -1592,6 +1683,8 @@ server <- function(input, output, session) {
     selected_pmn_available = TRUE,
     taxonomy_status = "Choose a listed organism, or type any organism name and select the UniProt match.",
     go_cache = list(),
+    run_all_output_dir = "",
+    run_all_log = character(),
     log = character()
   )
 
@@ -4718,6 +4811,133 @@ server <- function(input, output, session) {
 
   output$run_log <- renderText({ paste(rv$log, collapse = "\n") })
 
+  current_parameters_df <- reactive({
+    rows <- list()
+    add_param <- function(section, parameter, value) {
+      if (is.null(value)) value <- ""
+      value <- as.character(unlist(value, use.names = FALSE))
+      value <- value[!is.na(value)]
+      if (length(value) == 0) value <- ""
+      rows[[length(rows) + 1]] <<- data.frame(
+        Section = section,
+        Parameter = parameter,
+        Value = paste(value, collapse = ", "),
+        stringsAsFactors = FALSE
+      )
+    }
+
+
+    add_param("Organism / IDs", "Organism", rv$selected_organism_label %||% "")
+    add_param("Organism / IDs", "Tax ID", rv$selected_tax_id %||% "")
+    add_param("Organism / IDs", "Gene ID type", input$go_keytype %||% "")
+    add_param("Organism / IDs", "GO OrgDb", input$go_orgdb %||% "")
+    add_param("Organism / IDs", "Annotation source", rv$annotation_label %||% "")
+
+    add_param("Thresholds", "Adjusted p-value cutoff", input$alpha %||% 0.05)
+    add_param("Thresholds", "Absolute log2FC cutoff", input$lfc_cutoff %||% 1)
+
+    add_param("GO", "Gene set", input$go_direction %||% "up")
+    add_param("GO", "Ontology", input$ontology %||% "BP")
+    add_param("GO", "Display p-value cutoff", input$go_pcut %||% 0.01)
+    add_param("GO", "Top terms", input$top_n %||% 20)
+    add_param("GO", "topGO algorithm", input$go_algorithm %||% "weight01")
+    add_param("GO", "Statistic", input$go_statistic %||% "fisher")
+    add_param("GO", "REVIGO gene set", input$revigo_direction %||% "up")
+    add_param("GO", "REVIGO max terms", input$revigo_top_n %||% 80)
+    add_param("GO", "REVIGO threshold", input$revigo_threshold %||% 0.7)
+    add_param("GO", "REVIGO layout", input$revigo_algorithm %||% "umap")
+    add_param("GO", "Abiotic stress gene set", input$stress_dataset %||% "all")
+
+    add_param("KEGG / Pathview", "KEGG organism code", input$kegg_species %||% "")
+    add_param("KEGG / Pathview", "Pathview color key limit", input$pathview_gene_limit %||% 2)
+    add_param("KEGG / Pathview", "Pathview color key position", input$pathview_key_pos %||% "topright")
+    add_param("KEGG / Pathview", "Pathview show color key", isTRUE(input$pathview_plot_col_key))
+    add_param("KEGG / Pathview", "Pathview near-zero color", input$pathview_color_mid %||% "#d4d4d4")
+    add_param("KEGG / Pathview", "Run All top Pathview pathways", input$run_all_pathview_top_n %||% 1)
+
+    add_param("MSigDB / Hallmark", "Gene set", input$msigdb_direction %||% "up")
+    add_param("MSigDB / Hallmark", "Species", input$msigdb_species %||% "")
+    add_param("MSigDB / Hallmark", "Minimum set size", input$msigdb_min_set_size %||% 5)
+    add_param("MSigDB / Hallmark", "FDR display cutoff", input$msigdb_pcut %||% 0.05)
+    add_param("MSigDB / Hallmark", "Top terms", input$msigdb_top_n %||% 20)
+
+    add_param("PMN", "Gene set", input$pmn_direction %||% "up")
+    add_param("PMN", "Cyc DB", input$pmn_cyc_db %||% "")
+    add_param("PMN", "Minimum set size", input$pmn_min_set_size %||% 3)
+    add_param("PMN", "FDR display cutoff", input$pmn_pcut %||% 0.05)
+    add_param("PMN", "Top pathways", input$pmn_top_n %||% 20)
+
+    add_param("Gene groups", "Gene family enrichment gene set", input$gene_family_enrichment_direction %||% "up")
+    add_param("Gene groups", "Gene family minimum size", input$gene_family_min_size %||% 3)
+    add_param("Gene groups", "Selected gene families", input$gene_family_select %||% "")
+    add_param("Gene groups", "Selected custom group", input$gene_group_select %||% "")
+
+    add_param("TE analysis", "TE enrichment p-value cutoff", input$te_enrich_pvalue %||% 0.05)
+    add_param("TE analysis", "TE volcano padj cutoff", input$te_padj_cutoff %||% 0.05)
+    add_param("TE analysis", "TE volcano |log2FC| cutoff", input$te_lfc_cutoff %||% 1)
+    add_param("TE analysis", "TE volcano color set", input$te_color_palette %||% "default")
+    add_param("TE analysis", "Overlap region", input$te_overlap_region %||% "upstream")
+    add_param("TE analysis", "Overlap flank bp", input$te_overlap_flank_bp %||% 2000)
+    add_param("TE analysis", "Overlap DEG direction", input$te_overlap_direction %||% "all")
+    add_param("TE analysis", "Overlap top families", input$te_overlap_top_n %||% 10)
+    add_param("TE analysis", "Include TEGs", isTRUE(input$te_overlap_include_tegs))
+    add_param("TE analysis", "Overlap enrichment background", input$te_overlap_enrichment_background %||% "all_tair10")
+
+    add_param("Run All", "Direction mode", input$run_all_direction_mode %||% "up_down")
+    add_param("Run All", "Image format", input$run_all_image_format %||% "svg")
+    add_param("Run All", "Render HTML report", isTRUE(input$run_all_render_report))
+    add_param("Run All", "Output folder path", input$run_all_output_path %||% app_project_root())
+
+    add_param("Data", "Input mode", input$count_input_type %||% input$data_input_type %||% "")
+    add_param("Data", "Treatment", input$treatment %||% "")
+    add_param("Data", "Control", input$control %||% "")
+    parameter_comparison <- if (nzchar(trimws(input$treatment %||% "")) && nzchar(trimws(input$control %||% ""))) {
+      paste0(input$treatment, "_vs_", input$control)
+    } else {
+      ""
+    }
+    add_param("Data", "Comparison", parameter_comparison)
+    add_param("Data", "Condition/group column", input$condition_col %||% "")
+    add_param("Data", "Minimum total count", input$min_count %||% 10)
+    add_param("Data", "Use ashr LFC shrinkage", isTRUE(input$lfc_shrink))
+    add_param("Data", "Use condition/effect interaction", isTRUE(input$use_interaction))
+    add_param("Data", "RSEM as transcript IDs", isTRUE(input$rsem_transcript_ids))
+    
+    add_param("Plot style", "Theme", input$plot_theme %||% "classic")
+    add_param("Plot style", "Font family", input$plot_font_family %||% "serif")
+    add_param("Plot style", "Point size", input$plot_point_size %||% 1)
+    add_param("Plot style", "Point alpha", input$plot_alpha %||% 0.65)
+    add_param("Plot style", "Up color", input$color_up %||% "#B2182B")
+    add_param("Plot style", "Down color", input$color_down %||% "#2166AC")
+    add_param("Plot style", "Not significant color", input$color_ns %||% "#B3B3B3")
+
+    add_param("Plot sizes", "DE plot width", input$de_plot_width %||% 350)
+    add_param("Plot sizes", "DE plot height", input$de_plot_height %||% 200)
+    add_param("Plot sizes", "GO plot width", input$go_plot_width %||% 450)
+    add_param("Plot sizes", "GO plot height", input$go_plot_height %||% 400)
+    add_param("Plot sizes", "KEGG plot width", input$kegg_plot_width %||% 1000)
+    add_param("Plot sizes", "KEGG plot height", input$kegg_plot_height %||% 400)
+    add_param("Plot sizes", "MSigDB plot width", input$msigdb_plot_width %||% 550)
+    add_param("Plot sizes", "MSigDB plot height", input$msigdb_plot_height %||% 400)
+    add_param("Plot sizes", "PMN plot width", input$pmn_plot_width %||% 550)
+    add_param("Plot sizes", "PMN plot height", input$pmn_plot_height %||% 350)
+    add_param("Plot sizes", "TE plot width", input$teg_plot_width %||% 350)
+    add_param("Plot sizes", "TE plot height", input$teg_plot_height %||% 200)
+    add_param("Plot sizes", "Gene group plot width", input$grp_plot_width %||% 450)
+    add_param("Plot sizes", "Gene group plot height", input$grp_plot_height %||% 200)
+
+    do.call(rbind, rows)
+  })
+
+  output$parameters_table <- renderDT({
+    datatable(
+      current_parameters_df(),
+      rownames = FALSE,
+      filter = "top",
+      options = list(pageLength = 100, scrollX = TRUE, autoWidth = FALSE)
+    )
+  })
+
   output$dependency_table <- renderDT({
     selected_orgdb <- input$go_orgdb %||% rv$selected_orgdb %||% ""
     d <- dependency_status_table(extra_packages = selected_orgdb)
@@ -4733,6 +4953,688 @@ server <- function(input, output, session) {
       color = DT::styleEqual(c("Yes", "No"), c("#1A7F37", "#B2182B")),
       fontWeight = "bold"
     )
+  })
+
+  observeEvent(input$choose_run_all_dir, {
+    path <- shinyFiles::parseDirPath(volumes, input$choose_run_all_dir)
+    if (length(path) > 0 && nzchar(path[1])) {
+      rv$run_all_output_dir <- path[1]
+      updateTextInput(session, "run_all_output_path", value = path[1])
+    }
+  })
+
+  run_all_default_output_dir <- reactive({
+    app_project_root()
+  })
+
+  run_all_effective_output_dir <- reactive({
+    manual <- trimws(input$run_all_output_path %||% "")
+    if (nzchar(manual)) return(manual)
+    if (nzchar(rv$run_all_output_dir %||% "")) return(rv$run_all_output_dir)
+    run_all_default_output_dir()
+  })
+
+  # observeEvent(input$rsem_path, {
+  #   path <- trimws(input$rsem_path %||% "")
+  #   if (nzchar(path) && dir.exists(path) && !nzchar(trimws(input$run_all_output_path %||% ""))) {
+  #     updateTextInput(session, "run_all_output_path", value = normalizePath(path, winslash = "/", mustWork = FALSE))
+  #   }
+  # }, ignoreInit = TRUE)
+
+  run_all_core_choices <- reactive({
+    choices <- character()
+    if (!is.null(rv$de)) {
+      choices <- c(
+        choices,
+        "DE table" = "de_table",
+        "Volcano plot" = "volcano",
+        "MA plot" = "ma"
+      )
+      if (!is.null(rv$de_summary)) choices <- c(choices, "DE summary" = "de_summary")
+    }
+    if (!is.null(rv$norm_counts)) choices <- c(choices, "Normalized counts" = "normalized_counts")
+    if (!is.null(rv$pca)) choices <- c(choices, "PCA plot" = "pca")
+    choices
+  })
+
+  run_all_enrichment_choices <- reactive({
+    choices <- character()
+    go_available <- nzchar(trimws(input$go_orgdb %||% ""))
+    if (isTRUE(go_available)) {
+      choices <- c(
+        choices,
+        "GO enrichment table + bubble" = "go",
+        "GO REVIGO-like scatter + treemap" = "revigo",
+        "GO offspring summary" = "go_offspring",
+        "GO abiotic-stress enrichment" = "go_stress"
+      )
+    }
+    if (isTRUE(rv$selected_kegg_available) && nzchar(trimws(input$kegg_species %||% ""))) {
+      choices <- c(
+        choices,
+        "KEGG enrichment table + bubble" = "kegg",
+        "KEGG Pathview map" = "pathview"
+      )
+    }
+    if (isTRUE(msigdb_species_available(input$msigdb_species))) {
+      choices <- c(choices, "MSigDB/Hallmark enrichment" = "msigdb")
+    }
+    if (nzchar(trimws(input$pmn_cyc_db %||% ""))) {
+      choices <- c(
+        choices,
+        "PMN pathway enrichment" = "pmn",
+        "PMN selected/top pathway genes" = "pmn_pathway"
+      )
+    }
+    tax_id <- suppressWarnings(as.integer(rv$selected_tax_id))
+    if (tax_id %in% c(3702L, 9606L)) {
+      choices <- c(choices, "Gene family enrichment" = "gene_family")
+    }
+    choices
+  })
+
+  run_all_te_choices <- reactive({
+    tax_id <- suppressWarnings(as.integer(rv$selected_tax_id))
+    if (!identical(tax_id, 3702L)) return(character())
+    c(
+      "TEG enrichment" = "te_enrichment",
+      "TEG volcano" = "te_volcano",
+      "Overlapped TEs" = "te_overlap"
+    )
+  })
+
+  run_all_preserved_selection <- function(input_id, choices, default = character()) {
+    current <- input[[input_id]] %||% default
+    intersect(current, unname(choices))
+  }
+
+  output$run_all_core_ui <- renderUI({
+    choices <- run_all_core_choices()
+    if (length(choices) == 0) return(div(class = "muted", "Load data first."))
+    checkboxGroupInput(
+      "run_all_core",
+      NULL,
+      choices = choices,
+      selected = run_all_preserved_selection("run_all_core", choices, c("de_table", "volcano"))
+    )
+  })
+
+  output$run_all_enrichment_ui <- renderUI({
+    choices <- run_all_enrichment_choices()
+    if (length(choices) == 0) return(div(class = "muted", "No organism-aware enrichment analysis is available for the current settings."))
+    tagList(
+      checkboxGroupInput(
+        "run_all_enrichment",
+        NULL,
+        choices = choices,
+        selected = run_all_preserved_selection("run_all_enrichment", choices)
+      ),
+      if ("pathview" %in% unname(choices)) {
+        conditionalPanel(
+          "input.run_all_enrichment && input.run_all_enrichment.indexOf('pathview') >= 0",
+          numericInput("run_all_pathview_top_n", "Top significant KEGG pathways for Pathview", value = 1, min = 1, max = 20, step = 1)
+        )
+      }
+    )
+  })
+
+  output$run_all_te_ui <- renderUI({
+    choices <- run_all_te_choices()
+    if (length(choices) == 0) return(div(class = "muted", "Available only for Arabidopsis thaliana."))
+    checkboxGroupInput(
+      "run_all_te",
+      NULL,
+      choices = choices,
+      selected = run_all_preserved_selection("run_all_te", choices)
+    )
+  })
+
+  observeEvent(input$run_all_select_all, {
+    core_choices <- run_all_core_choices()
+    enrichment_choices <- run_all_enrichment_choices()
+    te_choices <- run_all_te_choices()
+    if (length(core_choices) > 0) updateCheckboxGroupInput(session, "run_all_core", choices = core_choices, selected = unname(core_choices))
+    if (length(enrichment_choices) > 0) updateCheckboxGroupInput(session, "run_all_enrichment", choices = enrichment_choices, selected = unname(enrichment_choices))
+    if (length(te_choices) > 0) updateCheckboxGroupInput(session, "run_all_te", choices = te_choices, selected = unname(te_choices))
+  })
+
+  observeEvent(input$run_all_clear_all, {
+    updateCheckboxGroupInput(session, "run_all_core", selected = character())
+    updateCheckboxGroupInput(session, "run_all_enrichment", selected = character())
+    updateCheckboxGroupInput(session, "run_all_te", selected = character())
+  })
+
+  output$run_all_log <- renderText({
+    paste(rv$run_all_log, collapse = "\n")
+  })
+
+  run_all_direction_values <- reactive({
+    switch(input$run_all_direction_mode %||% "up_down",
+      up = "up",
+      down = "down",
+      up_down = c("up", "down"),
+      all = "all",
+      up_down_all = c("up", "down", "all"),
+      c("up", "down")
+    )
+  })
+
+  run_all_selected_ids <- reactive({
+    selected <- unique(c(
+      intersect(input$run_all_core %||% character(), unname(run_all_core_choices())),
+      intersect(input$run_all_enrichment %||% character(), unname(run_all_enrichment_choices())),
+      intersect(input$run_all_te %||% character(), unname(run_all_te_choices()))
+    ))
+    directional <- c("go", "revigo", "go_stress", "msigdb", "pmn", "gene_family")
+    dirs <- run_all_direction_values()
+    unique(unlist(lapply(selected, function(id) {
+      if (id %in% directional) paste0(id, "_", dirs) else id
+    }), use.names = FALSE))
+  })
+
+  run_all_comparison_name <- reactive({
+    treatment <- trimws(as.character(input$treatment %||% ""))
+    control <- trimws(as.character(input$control %||% ""))
+    if (nzchar(treatment) && nzchar(control)) {
+      paste0(treatment, "_vs_", control)
+    } else {
+      ""
+    }
+  })
+
+  run_all_tasks <- function() {
+    img_fmt <- input$run_all_image_format %||% "svg"
+
+    make_go_task <- function(direction) {
+      list(label = paste("GO enrichment", direction), run = function(out_dir) {
+        req(rv$de)
+        orgdb <- input$go_orgdb %||% "org.At.tair.db"
+        if (!ensure_orgdb_installed(orgdb)) stop("Could not install or load required OrgDb package: ", orgdb)
+        g <- compute_go_cached(direction)
+        rv$go_trigger <- rv$go_trigger + 1
+        files <- run_all_write_csv(g, file.path(out_dir, paste0("GO_", direction, "_all_terms.csv")))
+        d <- g[!is.na(g$pValue_num) & g$pValue_num <= (input$go_pcut %||% 0.01), , drop = FALSE]
+        if (nrow(d) > 0) {
+          files <- c(files, run_all_write_csv(d, file.path(out_dir, paste0("GO_", direction, "_filtered_terms.csv"))))
+          p <- make_go_bubble_plot(
+            d,
+            paste("GO enrichment:", direction, input$ontology %||% "BP"),
+            top_n = input$top_n %||% 20,
+            direction = direction,
+            point_alpha = input$plot_alpha,
+            color_up = input$color_up %||% "#B2182B",
+            color_down = input$color_down %||% "#2166AC",
+            color_all = input$color_ns %||% "#B3B3B3",
+            plot_theme = input$plot_theme %||% "classic",
+            font_family = input$plot_font_family %||% "serif"
+          )
+          files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, paste0("GO_", direction, "_bubble"), img_fmt), input$go_plot_width, input$go_plot_height))
+        }
+        files
+      })
+    }
+
+    make_revigo_task <- function(direction) {
+      list(label = paste("GO REVIGO-like", direction), run = function(out_dir) {
+        req(rv$de)
+        orgdb <- input$go_orgdb %||% "org.At.tair.db"
+        if (!ensure_orgdb_installed(orgdb)) stop("Could not install or load required OrgDb package: ", orgdb)
+        direction_label <- switch(direction,
+          up = "Upregulated genes",
+          down = "Downregulated genes",
+          all = "All significant genes",
+          direction
+        )
+        go_terms <- compute_go_cached(direction)
+        if (is.null(go_terms) || nrow(go_terms) < 2) stop("Not enough ", direction, " GO terms to reduce.")
+        res <- run_rrvgo_reduce(
+          go_terms,
+          ontology = input$ontology,
+          top_n = input$revigo_top_n,
+          threshold = input$revigo_threshold,
+          title = direction_label,
+          orgdb = orgdb,
+          plot_theme = input$plot_theme %||% "classic",
+          font_family = input$plot_font_family %||% "serif",
+          algorithm = input$revigo_algorithm %||% "umap",
+          color_palette = input$revigo_color_palette %||% "set1",
+          show_labels = isTRUE(input$revigo_show_labels),
+          max_parent_labels = input$revigo_parent_label_count %||% 8,
+          parent_label_hjust = input$revigo_parent_label_hjust %||% 0,
+          parent_label_nudge_x = input$revigo_parent_label_nudge_x %||% 0.15,
+          parent_label_segment_size = input$revigo_parent_label_segment_size %||% 0.3,
+          parent_label_colored = isTRUE(input$revigo_parent_label_colored),
+          parent_label_size = input$revigo_parent_label_size %||% 3
+        )
+        files <- run_all_write_csv(res$table, file.path(out_dir, paste0("REVIGO_", direction, "_table.csv")))
+        p <- if (is.null(res$plot_data)) res$plot else plot_revigo_data(
+          res$plot_data,
+          paste("REVIGO-like GO terms:", direction_label),
+          color_palette = input$revigo_color_palette %||% "set1",
+          show_labels = isTRUE(input$revigo_show_labels),
+          max_parent_labels = input$revigo_parent_label_count %||% 8,
+          parent_label_hjust = input$revigo_parent_label_hjust %||% 0,
+          parent_label_nudge_x = input$revigo_parent_label_nudge_x %||% 0.15,
+          parent_label_segment_size = input$revigo_parent_label_segment_size %||% 0.3,
+          parent_label_colored = isTRUE(input$revigo_parent_label_colored),
+          parent_label_size = input$revigo_parent_label_size %||% 3,
+          plot_theme = input$plot_theme %||% "classic",
+          font_family = input$plot_font_family %||% "serif"
+        )
+        files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, paste0("REVIGO_", direction, "_scatter"), img_fmt), input$go_plot_width, input$go_plot_height))
+        treemap <- make_revigo_treemap_plot(res$table, title = paste("REVIGO-like treemap:", direction_label))
+        files <- c(files, run_all_save_plot(treemap, run_all_plot_file(out_dir, paste0("REVIGO_", direction, "_treemap"), img_fmt), input$go_plot_width, input$go_plot_height))
+        files
+      })
+    }
+
+    make_go_stress_task <- function(direction) {
+      list(label = paste("GO abiotic-stress enrichment", direction), run = function(out_dir) {
+        req(rv$de)
+        stress <- make_abiotic_stress_table(
+          rv$de,
+          dataset = direction,
+          alpha = input$alpha,
+          lfc_cutoff = input$lfc_cutoff,
+          orgdb = input$go_orgdb %||% "org.At.tair.db",
+          keytype = input$go_keytype %||% "TAIR"
+        )
+        files <- run_all_write_csv(stress, file.path(out_dir, paste0("GO_abiotic_stress_", direction, ".csv")))
+        p <- make_abiotic_stress_plot(
+          stress,
+          paste("Abiotic stress enrichment:", direction),
+          plot_theme = input$plot_theme %||% "classic",
+          font_family = input$plot_font_family %||% "serif"
+        )
+        files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, paste0("GO_abiotic_stress_", direction), img_fmt), input$go_plot_width, input$go_plot_height))
+        files
+      })
+    }
+
+    make_msigdb_task <- function(direction) {
+      list(label = paste("MSigDB/Hallmark", direction), run = function(out_dir) {
+        req(rv$de)
+        validate(need(msigdb_species_available(input$msigdb_species), "Select an available MSigDB species."))
+        res <- run_msigdb_hallmark_enrichment(
+          rv$de,
+          direction = direction,
+          species = input$msigdb_species %||% rv$selected_organism_label,
+          keytype = input$go_keytype %||% "SYMBOL",
+          alpha = input$alpha,
+          lfc_cutoff = input$lfc_cutoff,
+          min_set_size = input$msigdb_min_set_size %||% 5
+        )
+        files <- run_all_write_csv(res, file.path(out_dir, paste0("MSigDB_Hallmark_", direction, ".csv")))
+        d <- res[!is.na(res$pAdjusted) & res$pAdjusted <= (input$msigdb_pcut %||% 0.05), , drop = FALSE]
+        if (nrow(d) > 0) {
+          p <- make_msigdb_hallmark_plot(
+            d,
+            title = paste("MSigDB Hallmark:", direction),
+            top_n = input$msigdb_top_n %||% 20,
+            point_alpha = input$plot_alpha,
+            color_up = input$color_up %||% "#B2182B",
+            color_down = input$color_down %||% "#2166AC",
+            color_all = input$color_ns %||% "#B3B3B3",
+            plot_theme = input$plot_theme %||% "classic",
+            font_family = input$plot_font_family %||% "serif"
+          )
+          files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, paste0("MSigDB_Hallmark_", direction), img_fmt), input$msigdb_plot_width, input$msigdb_plot_height))
+        }
+        files
+      })
+    }
+
+    make_pmn_task <- function(direction) {
+      list(label = paste("PMN pathways", direction), run = function(out_dir) {
+        req(rv$de)
+        validate(need(nzchar(trimws(input$pmn_cyc_db %||% "")), "Select or enter a PMN Cyc database."))
+        res <- run_pmn_enrichment(
+          rv$de,
+          direction = direction,
+          cyc_db = input$pmn_cyc_db,
+          alpha = input$alpha,
+          lfc_cutoff = input$lfc_cutoff,
+          min_set_size = input$pmn_min_set_size %||% 3
+        )
+        files <- run_all_write_csv(res, file.path(out_dir, paste0("PMN_", input$pmn_cyc_db %||% "Cyc", "_", direction, "_enrichment.csv")))
+        p <- plot_pmn_bubble(
+          res,
+          p_value_threshold = input$pmn_pcut %||% 0.05,
+          top_n = input$pmn_top_n %||% 20,
+          point_alpha = input$plot_alpha,
+          color_up = input$color_up %||% "#B2182B",
+          color_down = input$color_down %||% "#2166AC",
+          color_all = input$color_ns %||% "#B3B3B3",
+          plot_theme = input$plot_theme %||% "classic",
+          font_family = input$plot_font_family %||% "serif"
+        )
+        if (!is.null(p)) files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, paste0("PMN_", input$pmn_cyc_db %||% "Cyc", "_", direction, "_bubble"), img_fmt), input$pmn_plot_width, input$pmn_plot_height))
+        files
+      })
+    }
+
+    make_gene_family_task <- function(direction) {
+      list(label = paste("Gene family enrichment", direction), run = function(out_dir) {
+        req(rv$de)
+        tax_id <- suppressWarnings(as.integer(rv$selected_tax_id))
+        if (!(tax_id %in% c(3702L, 9606L))) {
+          stop("Gene-family enrichment is available only for Arabidopsis thaliana and Homo sapiens.")
+        }
+        if (is.null(rv$gene_family_context)) {
+          rv$gene_family_context <- setup_gene_family_analysis(
+            rv$de,
+            tax_id = rv$selected_tax_id,
+            alpha = input$alpha,
+            lfc_cutoff = input$lfc_cutoff,
+            gene_id_type = input$go_keytype %||% "TAIR",
+            orgdb = input$go_orgdb %||% "org.At.tair.db"
+          )
+        }
+        res <- run_gene_family_enrichment(
+          rv$de,
+          tax_id = rv$selected_tax_id,
+          direction = direction,
+          alpha = input$alpha,
+          lfc_cutoff = input$lfc_cutoff,
+          min_set_size = input$gene_family_min_size %||% 3,
+          gene_id_type = input$go_keytype %||% "TAIR",
+          orgdb = input$go_orgdb %||% "org.At.tair.db",
+          ctx = rv$gene_family_context
+        )
+        files <- run_all_write_csv(res, file.path(out_dir, paste0("gene_family_enrichment_", direction, ".csv")))
+        p <- plot_at_gene_family_enrichment(
+          res,
+          p_value_threshold = input$alpha,
+          top_n = 10,
+          color_up = input$color_up %||% "#B2182B",
+          color_down = input$color_down %||% "#2166AC",
+          color_all = input$color_ns %||% "#B3B3B3",
+          plot_theme = input$plot_theme %||% "classic",
+          font_family = input$plot_font_family %||% "serif"
+        )
+        if (!is.null(p)) {
+          files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, paste0("gene_family_enrichment_", direction), img_fmt), input$grp_plot_width, input$grp_plot_height))
+        }
+        files
+      })
+    }
+
+    make_te_overlap_task <- function(direction) {
+      list(label = paste("Overlapped TEs", direction), run = function(out_dir) {
+        req(rv$de)
+        out <- run_overlapped_te_analysis(
+          rv$de,
+          region = input$te_overlap_region %||% "upstream",
+          flank_bp = input$te_overlap_flank_bp %||% 2000,
+          direction = direction,
+          alpha = input$alpha,
+          lfc_cutoff = input$lfc_cutoff,
+          include_tegs = isTRUE(input$te_overlap_include_tegs)
+        )
+        old_overlap <- rv$te_overlap
+        old_table <- rv$te_overlap_table
+        old_counts <- rv$te_overlap_family_counts
+        on.exit({
+          rv$te_overlap <- old_overlap
+          rv$te_overlap_table <- old_table
+          rv$te_overlap_family_counts <- old_counts
+        }, add = TRUE)
+        rv$te_overlap <- out
+        rv$te_overlap_table <- out$gene_table
+        rv$te_overlap_family_counts <- out$family_counts
+        files <- c(
+          run_all_write_csv(out$gene_table, file.path(out_dir, paste0("Overlapped_TE_genes_", direction, ".csv"))),
+          run_all_write_csv(out$family_counts, file.path(out_dir, paste0("Overlapped_TE_family_counts_", direction, ".csv")))
+        )
+        enrich <- te_overlap_enrichment_reactive()
+        files <- c(files, run_all_write_csv(enrich, file.path(out_dir, paste0("Overlapped_TE_family_enrichment_", direction, "_", input$te_overlap_enrichment_background %||% "background", ".csv"))))
+        p <- tryCatch(te_overlap_volcano_reactive(), error = function(e) NULL)
+        if (!is.null(p)) files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, paste0("Overlapped_TE_volcano_", direction), img_fmt), input$teg_plot_width, input$teg_plot_height))
+        p2 <- tryCatch(te_overlap_family_plot_reactive(), error = function(e) NULL)
+        if (!is.null(p2)) files <- c(files, run_all_save_plot(p2, run_all_plot_file(out_dir, paste0("Overlapped_TE_family_counts_", direction), img_fmt), input$teg_plot_width, input$teg_plot_height))
+        p3 <- tryCatch(te_overlap_enrichment_plot_reactive(), error = function(e) NULL)
+        if (!is.null(p3)) files <- c(files, run_all_save_plot(p3, run_all_plot_file(out_dir, paste0("Overlapped_TE_family_enrichment_", direction), img_fmt), input$teg_plot_width, input$teg_plot_height))
+        files
+      })
+    }
+
+    tasks <- list(
+      de_table = list(label = "DE table", run = function(out_dir) {
+        req(rv$de)
+        run_all_write_csv(rv$de, file.path(out_dir, "DE_results.csv"))
+      }),
+      de_summary = list(label = "DE summary", run = function(out_dir) {
+        req(rv$de_summary)
+        run_all_write_csv(rv$de_summary, file.path(out_dir, "DE_summary.csv"))
+      }),
+      normalized_counts = list(label = "Normalized counts", run = function(out_dir) {
+        req(rv$norm_counts)
+        run_all_write_csv(rv$norm_counts, file.path(out_dir, "normalized_counts.csv"))
+      }),
+      volcano = list(label = "Volcano plot", run = function(out_dir) {
+        req(rv$de)
+        run_all_save_plot(volcano_reactive(), run_all_plot_file(out_dir, "volcano", img_fmt), input$de_plot_width, input$de_plot_height)
+      }),
+      ma = list(label = "MA plot", run = function(out_dir) {
+        req(rv$de)
+        run_all_save_plot(ma_reactive(), run_all_plot_file(out_dir, "MA_plot", img_fmt), input$de_plot_width, input$de_plot_height)
+      }),
+      pca = list(label = "PCA plot", run = function(out_dir) {
+        req(rv$pca)
+        run_all_save_plot(pca_reactive(), run_all_plot_file(out_dir, "PCA", img_fmt), input$de_plot_width, input$de_plot_height)
+      }),
+      go_offspring = list(label = "GO offspring summary", run = function(out_dir) {
+        req(rv$de)
+        res <- make_go_offspring_summary(
+          rv$de,
+          input$parent_go_ids,
+          input$alpha,
+          input$lfc_cutoff,
+          orgdb = input$go_orgdb %||% "org.At.tair.db",
+          keytype = input$go_keytype %||% "TAIR"
+        )
+        run_all_write_csv(res, file.path(out_dir, "GO_offspring_summary.csv"))
+      }),
+      kegg = list(label = "KEGG enrichment", run = function(out_dir) {
+        req(rv$de)
+        rv$kegg_enrichment <- run_kegg_enrichment(
+          rv$de,
+          padj_cutoff = input$alpha,
+          lfc_cutoff = input$lfc_cutoff,
+          kegg_species = input$kegg_species %||% "ath",
+          gene_id_type = input$go_keytype %||% NULL,
+          orgdb = input$go_orgdb %||% NULL
+        )
+        files <- run_all_write_csv(rv$kegg_enrichment, file.path(out_dir, "KEGG_enrichment.csv"))
+        p <- tryCatch(kegg_bubble_reactive(), error = function(e) NULL)
+        if (!is.null(p)) files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, "KEGG_enrichment_bubble", img_fmt), input$kegg_plot_width, input$kegg_plot_height))
+        files
+      }),
+      pathview = list(label = "KEGG Pathview map", run = function(out_dir) {
+        req(rv$de)
+        if (is.null(rv$kegg_enrichment)) {
+          rv$kegg_enrichment <- run_kegg_enrichment(
+            rv$de,
+            padj_cutoff = input$alpha,
+            lfc_cutoff = input$lfc_cutoff,
+            kegg_species = input$kegg_species %||% "ath",
+            gene_id_type = input$go_keytype %||% NULL,
+            orgdb = input$go_orgdb %||% NULL
+          )
+        }
+        sig_paths <- rv$kegg_enrichment[rv$kegg_enrichment$p.value <= input$alpha, , drop = FALSE]
+        if (is.null(sig_paths) || nrow(sig_paths) == 0) stop("No KEGG pathways pass the current p-value cutoff for Pathview.")
+        sig_paths <- sig_paths[order(sig_paths$p.value), , drop = FALSE]
+        top_n <- suppressWarnings(as.integer(input$run_all_pathview_top_n %||% 1))
+        if (!is.finite(top_n) || is.na(top_n) || top_n < 1) top_n <- 1
+        top_n <- min(top_n, nrow(sig_paths))
+        pathview_ids <- head(as.character(sig_paths$pathway.code), top_n)
+        files <- character()
+        errors <- character()
+        for (pwid in pathview_ids) {
+          tryCatch({
+            generate_pathview_map(pwid, progress_message = paste("Generating Pathview map:", pwid))
+            if (is.null(rv$pathview_pathway) || !file.exists(rv$pathview_pathway)) stop("Pathview did not generate an image.")
+            dest <- file.path(out_dir, paste0("Pathview_", run_all_safe_filename(pwid), ".png"))
+            file.copy(rv$pathview_pathway, dest, overwrite = TRUE)
+            files <- c(files, normalizePath(dest, winslash = "/", mustWork = FALSE))
+            if (!is.null(rv$pathview_table) && nrow(rv$pathview_table) > 0) {
+              files <- c(files, run_all_write_csv(rv$pathview_table, file.path(out_dir, paste0("Pathview_", run_all_safe_filename(pwid), "_genes.csv"))))
+            }
+          }, error = function(e) {
+            errors <<- c(errors, paste0(pwid, ": ", e$message))
+          })
+        }
+        if (length(files) == 0 && length(errors) > 0) {
+          stop("Pathview failed for all selected pathways: ", paste(errors, collapse = " | "))
+        }
+        if (length(errors) > 0) append_log("Run All Pathview warnings:", paste(errors, collapse = " | "))
+        files
+      }),
+      pmn_pathway = list(label = "PMN selected/top pathway genes", run = function(out_dir) {
+        req(rv$de)
+        validate(need(nzchar(trimws(input$pmn_cyc_db %||% "")), "Select or enter a PMN Cyc database."))
+        pathway_codes <- input$pmn_pathway_codes %||% character()
+        if (length(pathway_codes) == 0 || !nzchar(paste(pathway_codes, collapse = ""))) {
+          if (is.null(rv$pmn_enrichment)) {
+            rv$pmn_enrichment <- run_pmn_enrichment(
+              rv$de,
+              direction = "all",
+              cyc_db = input$pmn_cyc_db,
+              alpha = input$alpha,
+              lfc_cutoff = input$lfc_cutoff,
+              min_set_size = input$pmn_min_set_size %||% 3
+            )
+          }
+          pathway_codes <- head(rv$pmn_enrichment$pathway.code, 3)
+        }
+        rv$pmn_pathway_lookup <- make_pmn_pathway_summary(
+          rv$de,
+          pathway_codes = pathway_codes,
+          cyc_db = input$pmn_cyc_db,
+          alpha = input$alpha,
+          lfc_cutoff = input$lfc_cutoff
+        )
+        rv$pmn_pathway_genes <- make_pmn_pathway_gene_table(
+          rv$de,
+          pathway_codes = pathway_codes,
+          cyc_db = input$pmn_cyc_db,
+          alpha = input$alpha,
+          lfc_cutoff = input$lfc_cutoff
+        )
+        files <- c(
+          run_all_write_csv(rv$pmn_pathway_lookup, file.path(out_dir, "PMN_pathway_summary.csv")),
+          run_all_write_csv(rv$pmn_pathway_genes, file.path(out_dir, "PMN_pathway_genes.csv"))
+        )
+        p <- tryCatch(pmn_pathway_volcano_reactive(), error = function(e) NULL)
+        if (!is.null(p)) files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, "PMN_pathway_volcano", img_fmt), input$pmn_plot_width, input$pmn_plot_height))
+        files
+      }),
+      te_enrichment = list(label = "TEG enrichment", run = function(out_dir) {
+        req(rv$de)
+        rv$te_enrichment <- run_te_enrichment(rv$de, pvalue_cutoff = input$te_enrich_pvalue)
+        files <- run_all_write_csv(rv$te_enrichment, file.path(out_dir, "TEG_enrichment.csv"))
+        for (direction in c("up", "down", "all")) {
+          p <- plot_te_enrichment_direction(
+            rv$te_enrichment,
+            direction = direction,
+            p_value_threshold = input$te_enrich_pvalue,
+            color_up = input$color_up %||% "#B2182B",
+            color_down = input$color_down %||% "#2166AC",
+            color_all = "#5B5B5B",
+            plot_theme = input$plot_theme %||% "classic",
+            font_family = input$plot_font_family %||% "serif"
+          )
+          if (!is.null(p)) files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, paste0("TEG_enrichment_", direction), img_fmt), input$teg_plot_width, input$teg_plot_height))
+        }
+        files
+      }),
+      te_volcano = list(label = "TEG volcano", run = function(out_dir) {
+        req(rv$de)
+        super_families <- input$te_super_families %||% te_volcano_default_superfamilies()
+        out <- make_retro_te_volcano(
+          rv$de,
+          super_families = super_families,
+          padj_cutoff = input$te_padj_cutoff,
+          lfc_cutoff = input$te_lfc_cutoff,
+          point_size = input$plot_point_size,
+          point_alpha = input$plot_alpha,
+          plot_theme = input$plot_theme %||% "classic",
+          font_family = input$plot_font_family %||% "serif",
+          color_palette = input$te_color_palette %||% "default"
+        )
+        rv$te_volcano <- out$data
+        rv$te_volcano_plot <- out$plot
+        c(
+          run_all_write_csv(out$data, file.path(out_dir, "TEG_volcano_table.csv")),
+          run_all_save_plot(out$plot, run_all_plot_file(out_dir, "TEG_volcano", img_fmt), input$teg_plot_width, input$teg_plot_height)
+        )
+      }),
+      te_overlap = make_te_overlap_task(input$te_overlap_direction %||% "all")
+    )
+
+    for (direction in c("up", "down", "all")) {
+      tasks[[paste0("go_", direction)]] <- make_go_task(direction)
+      tasks[[paste0("revigo_", direction)]] <- make_revigo_task(direction)
+      tasks[[paste0("go_stress_", direction)]] <- make_go_stress_task(direction)
+      tasks[[paste0("msigdb_", direction)]] <- make_msigdb_task(direction)
+      tasks[[paste0("pmn_", direction)]] <- make_pmn_task(direction)
+      tasks[[paste0("gene_family_", direction)]] <- make_gene_family_task(direction)
+      tasks[[paste0("te_overlap_", direction)]] <- make_te_overlap_task(direction)
+    }
+
+    tasks
+  }
+
+  observeEvent(input$run_all_btn, {
+    req(rv$de)
+    selected <- run_all_selected_ids()
+    rv$run_all_log <- character()
+    append_log("Run All started", level = "STEP")
+    withProgress(message = "Run All", value = 0.1, {
+      result <- tryCatch({
+        run_all_execute(
+          selected = selected,
+          output_dir = run_all_effective_output_dir(),
+          tasks = run_all_tasks(),
+          append_log = append_log,
+          render_report = isTRUE(input$run_all_render_report),
+          metadata = list(
+            "Comparison" = run_all_comparison_name(),
+            "Organism" = rv$selected_organism_label %||% "",
+            "Tax ID" = rv$selected_tax_id %||% "",
+            "Gene ID type" = input$go_keytype %||% "",
+            "OrgDb" = input$go_orgdb %||% "",
+            "Adjusted p-value cutoff" = input$alpha %||% "",
+            "Absolute log2FC cutoff" = input$lfc_cutoff %||% "",
+            "Run All direction mode" = input$run_all_direction_mode %||% "",
+            "Run All image format" = input$run_all_image_format %||% "",
+            "Selected Run All tasks" = selected,
+            "GO ontology" = input$ontology %||% "",
+            "GO display p-value cutoff" = input$go_pcut %||% "",
+            "GO top terms" = input$top_n %||% "",
+            "KEGG organism code" = input$kegg_species %||% "",
+            "Run All top Pathview pathways" = input$run_all_pathview_top_n %||% 1,
+            "MSigDB species" = input$msigdb_species %||% "",
+            "PMN Cyc database" = input$pmn_cyc_db %||% "",
+            "Gene family minimum size" = input$gene_family_min_size %||% "",
+            "TE overlap region" = input$te_overlap_region %||% "",
+            "TE overlap flank bp" = input$te_overlap_flank_bp %||% "",
+            "TE overlap background" = input$te_overlap_enrichment_background %||% ""
+          ),
+          comparison_name = run_all_comparison_name()
+        )
+      }, error = function(e) {
+        showNotification(paste("Run All error:", e$message), type = "error", duration = 12)
+        list(log = paste(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "[ERROR]", e$message), output_dir = "", log_file = "")
+      })
+      rv$run_all_log <- result$log
+      incProgress(0.9, detail = "Finished")
+      if (nzchar(result$output_dir %||% "")) {
+        showNotification(paste("Run All finished:", result$output_dir), type = "message", duration = 10)
+        append_log("Run All finished. Log:", result$log_file)
+      }
+    })
   })
 
   output$download_de <- downloadHandler(
