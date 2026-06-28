@@ -550,7 +550,7 @@ ui <- fluidPage(
       #settings_toggle_btn {
         margin: 4px 0 10px 0;
         padding: 0 4px;
-        margin-left: 315px;
+        margin-left: left;
         font-size: 10px;
         line-height: 0.5;
         height: 16px;
@@ -6415,7 +6415,8 @@ server <- function(input, output, session) {
     tagList(
       tags$hr(),
       h4("Pathview mapped genes"),
-      DTOutput("pathview_table")
+      DTOutput("pathview_table"),
+      div(class = "download-row", downloadButton("download_pathview_table", "Download mapped genes CSV"))
     )
   })
 
@@ -6437,6 +6438,17 @@ server <- function(input, output, session) {
     content = function(file) {
       req(rv$pathview_pathway)
       file.copy(rv$pathview_pathway, file)
+    }
+  )
+
+  output$download_pathview_table <- downloadHandler(
+    filename = function() {
+      pathway_id <- rv$pathview_pwid %||% input$pathview_select %||% "pathway"
+      paste0("pathview_", safe_filename_part(pathway_id), "_mapped_genes_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      req(rv$pathview_table)
+      write.csv(rv$pathview_table, file, row.names = FALSE)
     }
   )
 }
