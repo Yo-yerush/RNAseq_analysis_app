@@ -18,7 +18,7 @@ suppressPackageStartupMessages({
 # Allow large annotation uploads, including compressed RefSeq GTF/GFF3 files.
 options(shiny.maxRequestSize = 500 * 1024^2)
 
-source(file.path("R", "opening_yo.R"), local = TRUE)
+# source(file.path("R", "opening_yo.R"), local = TRUE)
 source(file.path("R", "helpers.R"), local = TRUE)
 source(file.path("R", "count_data_preview.R"), local = TRUE)
 source(file.path("R", "run_all.R"), local = TRUE)
@@ -592,7 +592,7 @@ ui <- fluidPage(
     )
   ),
   sidebarLayout(
-    sidebarPanel(id = "settings_sidebar", width = 2,
+    sidebarPanel(id = "settings_sidebar", width = 3,
       conditionalPanel("input.tabs == 'Data input'",
         h4("Data input"),
         div(style = "display: flex; align-items: flex-start; gap: 6px;",
@@ -678,6 +678,10 @@ ui <- fluidPage(
         numericInput("go_pcut", "GO p-value display cutoff", value = 0.01, min = 0, max = 1, step = 0.001),
         selectInput("ontology", "GO ontology", choices = c("Biological Process" = "BP", "Molecular Function" = "MF", "Cellular Component" = "CC"), selected = "BP"),
         numericInput("top_n", "Top GO terms to display", value = 20, min = 5, max = 200, step = 5)
+      ),
+      conditionalPanel("input.tabs == 'KEGG'",
+        tags$hr(),
+        numericInput("kegg_top_n", "Top KEGG pathways to display", value = 20, min = 1, max = 100, step = 5)
       ),
       conditionalPanel("input.tabs == 'Hallmark'",
         tags$hr(),
@@ -953,6 +957,11 @@ ui <- fluidPage(
             tabPanel("Gene families - enrichment",
               wellPanel(
                 fluidRow(
+                  column(4, radioButtons("gene_family_enrichment_source", "Group source", choices = c("Ready tables" = "reference", "Description column" = "column"), selected = "reference", inline = TRUE)),
+                  column(4, uiOutput("gene_family_enrichment_column_ui")),
+                  column(4, conditionalPanel("input.gene_family_enrichment_source == 'column'", textInput("gene_family_column_separator", "Separator", value = ";  ")))
+                ),
+                fluidRow(
                   column(4, uiOutput("gene_family_enrichment_status_ui")),
                   column(3, selectInput("gene_family_enrichment_direction", "Gene set", choices = c("up", "down", "all"), selected = "up")),
                   column(3, numericInput("gene_family_min_size", "Min genes per family", value = 3, min = 1, step = 1)),
@@ -1022,11 +1031,16 @@ ui <- fluidPage(
                   column(8, selectInput("go_orgdb", "GO OrgDb", choices = go_orgdb_choices, selected = "org.At.tair.db"))
                 ),
                 fluidRow(
+                  column(4, radioButtons("go_annotation_source", "GO annotation source", choices = c("OrgDb package" = "orgdb", "Uploaded gene-GO table" = "custom"), selected = "orgdb", inline = TRUE)),
+                  column(4, conditionalPanel("input.go_annotation_source == 'custom'", fileInput("custom_go_file", "Gene-GO CSV/TSV/TXT", accept = c(".csv", ".tsv", ".txt")))),
+                  column(4, uiOutput("custom_go_status_ui"))
+                ),
+                fluidRow(
                   column(4, selectInput("go_algorithm", "topGO algorithm", choices = c("weight01", "classic", "elim"), selected = "weight01")),
                   column(4, selectInput("go_statistic", "Statistic", choices = c("fisher", "ks"), selected = "fisher")),
                   column(4, br(), actionButton("run_go", "Run GO enrichment", class = "btn-primary", style = "width:100%;"))
                 ),
-                div(class = "muted", "Choose any listed OrgDb package. Entries marked [installed] are ready to use; other packages must be installed before GO analysis can run. P-value & top-N filters apply on display without re-running.")
+                div(class = "muted", "OrgDb is the default GO annotation source. The uploaded table source uses column 1 as gene ID and column 2 as semicolon-separated GO IDs. P-value & top-N filters apply on display without re-running.")
               ),
               fluidRow(
                 column(12,
@@ -1044,7 +1058,7 @@ ui <- fluidPage(
                 fluidRow(
                   column(7, uiOutput("go_gene_codes_ui")),
                   column(2, br(), actionButton("run_go_gene_lookup", "Find genes", class = "btn-primary", style = "width:100%;")),
-                  column(3, div(class = "muted", style = "margin-top: 8px;", "Uses the selected GO OrgDb, Gene ID type, ontology, and current padj/log2FC thresholds."))
+                  column(3, div(class = "muted", style = "margin-top: 8px;", "Uses the selected GO annotation source, ontology, and current padj/log2FC thresholds."))
                 )
               ),
               fluidRow(
@@ -1157,8 +1171,13 @@ ui <- fluidPage(
               wellPanel(
                 fluidRow(
                   column(3, textInput("kegg_species", "KEGG code", value = "ath")),
-                  column(4, br(), actionButton("run_kegg", "Run KEGG Enrichment", class = "btn-primary", style="width:100%")),
-                  column(5, div(class = "muted", "Uses the organism selected in the Organism annotations tab and the current padj/log2FC thresholds. The KEGG code is auto-filled when available."))
+                  column(3, radioButtons("kegg_enrichment_source", "Enrichment source", choices = c("KEGG gene IDs" = "gene", "EC number column" = "ec"), selected = "gene")),
+                  column(3, uiOutput("kegg_ec_column_ui")),
+                  column(3, conditionalPanel("input.kegg_enrichment_source == 'ec'", textInput("kegg_ec_separator", "EC separator", value = ";  ")))
+                ),
+                fluidRow(
+                  column(4, actionButton("run_kegg", "Run KEGG Enrichment", class = "btn-primary", style="width:100%")),
+                  column(8, uiOutput("kegg_enrichment_status_ui"))
                 )
               ),
               fluidRow(
@@ -1621,6 +1640,10 @@ server <- function(input, output, session) {
     deseq_all_comparisons = NULL,
     venn_direction_filters = list(),
     go_trigger = 0,
+    custom_go_map = NULL,
+    custom_go_label = NULL,
+    custom_go_signature = NULL,
+    custom_go_status = NULL,
     offspring = NULL,
     stress = NULL,
     stress_plot = NULL,
@@ -1649,6 +1672,7 @@ server <- function(input, output, session) {
     hallmark_gene_lookup = NULL,
     hallmark_genes = NULL,
     kegg_enrichment = NULL,
+    kegg_enrichment_source = NULL,
     kegg_bubble = NULL,
     pmn_enrichment = NULL,
     pmn_plot = NULL,
@@ -2115,9 +2139,20 @@ server <- function(input, output, session) {
     apply_annotation_to_base(rv$de_base, reset_results = reset_results)
   }
 
+  go_annotation_source <- function() input$go_annotation_source %||% "orgdb"
+  go_uses_custom_mapping <- function() identical(go_annotation_source(), "custom")
+  active_custom_go_map <- function() {
+    if (!go_uses_custom_mapping()) return(NULL)
+    if (is.null(rv$custom_go_map) || nrow(rv$custom_go_map) == 0) {
+      stop("Upload a gene-GO table before running GO analysis with the uploaded-table source.")
+    }
+    rv$custom_go_map
+  }
+
   go_cache_key <- function(direction) {
     paste(direction, input$ontology, input$alpha, input$lfc_cutoff,
-          input$go_algorithm, input$go_statistic, input$go_orgdb, input$go_keytype, sep = "|")
+          input$go_algorithm, input$go_statistic, go_annotation_source(),
+          input$go_orgdb, input$go_keytype, rv$custom_go_signature %||% "none", sep = "|")
   }
   get_cached_go <- function(direction) {
     rv$go_cache[[go_cache_key(direction)]]
@@ -2136,10 +2171,10 @@ server <- function(input, output, session) {
                               statistic = input$go_statistic,
                               orgdb = input$go_orgdb %||% "org.At.tair.db",
                               topgo_id = topgo_id_from_keytype(input$go_keytype),
-                              keytype = input$go_keytype %||% "TAIR")
+                              keytype = input$go_keytype %||% "TAIR",
+                              custom_go_map = active_custom_go_map())
     set_cached_go(direction, g)
   }
-
   # Reactive: filtered GO data for current direction — updates without re-running
   go_display_data <- reactive({
     req(rv$go_trigger > 0)
@@ -3532,7 +3567,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$go_orgdb, {
     cfg <- organism_analysis_config[organism_analysis_config$orgdb == input$go_orgdb, , drop = FALSE]
-    go_available <- ensure_orgdb_installed(input$go_orgdb)
+    go_available <- if (go_uses_custom_mapping()) !is.null(rv$custom_go_map) && nrow(rv$custom_go_map) > 0 else ensure_orgdb_installed(input$go_orgdb)
     keytype_choices <- gene_id_type_choices_for_orgdb(input$go_orgdb)
     selected_keytype <- input$go_keytype %||% rv$detected_gene_id_type %||% "ENTREZID"
     if (nrow(cfg) > 0) {
@@ -3545,6 +3580,65 @@ server <- function(input, output, session) {
     rv$go_cache <- list()
   }, ignoreInit = TRUE)
 
+  output$custom_go_status_ui <- renderUI({
+    if (!go_uses_custom_mapping()) {
+      return(div(class = "muted", "OrgDb source uses the selected package and Gene ID type."))
+    }
+    if (is.null(rv$custom_go_map) || nrow(rv$custom_go_map) == 0) {
+      return(div(class = "muted", "Upload a two-column gene-GO table before running custom GO."))
+    }
+    div(
+      class = "muted",
+      paste0(
+        "Loaded ", format(nrow(rv$custom_go_map), big.mark = ","),
+        " gene-GO links for ", format(length(unique(rv$custom_go_map$gene_id)), big.mark = ","),
+        " genes from ", rv$custom_go_label %||% "uploaded table", "."
+      )
+    )
+  })
+
+  observeEvent(input$go_annotation_source, {
+    rv$go_cache <- list()
+    rv$go_trigger <- 0
+    rv$go_genes <- NULL
+    rv$go_gene_lookup <- NULL
+    rv$revigo <- NULL
+    rv$revigo_direction <- NULL
+    if (go_uses_custom_mapping()) {
+      rv$selected_go_available <- !is.null(rv$custom_go_map) && nrow(rv$custom_go_map) > 0
+    } else {
+      rv$selected_go_available <- requireNamespace(input$go_orgdb %||% "org.At.tair.db", quietly = TRUE)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$custom_go_file, {
+    file <- input$custom_go_file
+    req(file)
+    append_log("Loading custom GO table:", file$name, level = "STEP")
+    tryCatch({
+      map <- load_custom_go_mapping(file$datapath, source_name = file$name)
+      rv$custom_go_map <- map
+      rv$custom_go_label <- file$name
+      rv$custom_go_signature <- paste(file$name, file$size %||% "", nrow(map), length(unique(map$GO_ID)), sep = "|")
+      rv$custom_go_status <- paste("Loaded", nrow(map), "gene-GO links from", file$name)
+      rv$go_cache <- list()
+      rv$go_trigger <- 0
+      rv$go_genes <- NULL
+      rv$go_gene_lookup <- NULL
+      if (go_uses_custom_mapping()) rv$selected_go_available <- TRUE
+      showNotification(paste("Loaded custom GO table:", nrow(map), "gene-GO links."), type = "message", duration = 6)
+      append_log("Custom GO table loaded:", nrow(map), "gene-GO links for", length(unique(map$gene_id)), "genes.")
+    }, error = function(e) {
+      rv$custom_go_map <- NULL
+      rv$custom_go_label <- NULL
+      rv$custom_go_signature <- NULL
+      rv$custom_go_status <- e$message
+      rv$go_cache <- list()
+      if (go_uses_custom_mapping()) rv$selected_go_available <- FALSE
+      showNotification(paste("Custom GO table error:", e$message), type = "error", duration = 12)
+      append_log("Custom GO table error:", e$message)
+    })
+  })
   observeEvent(input$kegg_species, {
     rv$selected_kegg_available <- !is.null(input$kegg_species) && nzchar(input$kegg_species)
   }, ignoreInit = TRUE)
@@ -3678,12 +3772,18 @@ server <- function(input, output, session) {
     append_log("Running GO enrichment for", input$go_direction, "genes", level = "STEP")
     withProgress(message = "Running GO enrichment", value = 0.2, {
       tryCatch({
-        incProgress(0.15, detail = "Checking selected OrgDb package")
         orgdb <- input$go_orgdb %||% "org.At.tair.db"
-        if (!ensure_orgdb_installed(orgdb)) {
-          stop("Could not install or load required OrgDb package: ", orgdb)
+        if (go_uses_custom_mapping()) {
+          incProgress(0.15, detail = "Checking uploaded GO table")
+          active_custom_go_map()
+          rv$selected_go_available <- TRUE
+        } else {
+          incProgress(0.15, detail = "Checking selected OrgDb package")
+          if (!ensure_orgdb_installed(orgdb)) {
+            stop("Could not install or load required OrgDb package: ", orgdb)
+          }
+          rv$selected_go_available <- TRUE
         }
-        rv$selected_go_available <- TRUE
         incProgress(0.05, detail = "GO enrichment")
         g <- compute_go_cached(input$go_direction)  # stores all terms in cache
         rv$go_trigger <- rv$go_trigger + 1
@@ -3752,7 +3852,8 @@ server <- function(input, output, session) {
           orgdb = input$go_orgdb %||% "org.At.tair.db",
           keytype = input$go_keytype %||% "TAIR",
           alpha = input$alpha,
-          lfc_cutoff = input$lfc_cutoff
+          lfc_cutoff = input$lfc_cutoff,
+          custom_go_map = active_custom_go_map()
         )
         rv$go_genes <- genes
         if (nrow(genes) > 0) {
@@ -4282,6 +4383,7 @@ server <- function(input, output, session) {
     append_log("Running REVIGO-like GO reduction", level = "STEP")
     withProgress(message = "Running REVIGO-like semantic reduction", value = 0.1, {
       tryCatch({
+        if (go_uses_custom_mapping()) stop("REVIGO-like reduction still uses the OrgDb source. Switch GO annotation source to OrgDb for REVIGO.")
         direction <- input$revigo_direction %||% "up"
         direction_label <- switch(direction,
           up = "Upregulated genes",
@@ -4837,6 +4939,8 @@ server <- function(input, output, session) {
     add_param("Thresholds", "Absolute log2FC cutoff", input$lfc_cutoff %||% 1)
 
     add_param("GO", "Gene set", input$go_direction %||% "up")
+    add_param("GO", "Annotation source", input$go_annotation_source %||% "orgdb")
+    add_param("GO", "Custom GO table", rv$custom_go_label %||% "")
     add_param("GO", "Ontology", input$ontology %||% "BP")
     add_param("GO", "Display p-value cutoff", input$go_pcut %||% 0.01)
     add_param("GO", "Top terms", input$top_n %||% 20)
@@ -4849,6 +4953,10 @@ server <- function(input, output, session) {
     add_param("GO", "Abiotic stress gene set", input$stress_dataset %||% "all")
 
     add_param("KEGG / Pathview", "KEGG organism code", input$kegg_species %||% "")
+    add_param("KEGG / Pathview", "KEGG enrichment source", input$kegg_enrichment_source %||% "gene")
+    add_param("KEGG / Pathview", "KEGG EC column", input$kegg_ec_column %||% "")
+    add_param("KEGG / Pathview", "KEGG EC separator", input$kegg_ec_separator %||% ";  ")
+    add_param("KEGG / Pathview", "Top KEGG pathways", input$kegg_top_n %||% 20)
     add_param("KEGG / Pathview", "Pathview color key limit", input$pathview_gene_limit %||% 2)
     add_param("KEGG / Pathview", "Pathview color key position", input$pathview_key_pos %||% "topright")
     add_param("KEGG / Pathview", "Pathview show color key", isTRUE(input$pathview_plot_col_key))
@@ -4868,6 +4976,9 @@ server <- function(input, output, session) {
     add_param("PMN", "Top pathways", input$pmn_top_n %||% 20)
 
     add_param("Gene groups", "Gene family enrichment gene set", input$gene_family_enrichment_direction %||% "up")
+    add_param("Gene groups", "Gene family enrichment source", input$gene_family_enrichment_source %||% "reference")
+    add_param("Gene groups", "Gene family group column", input$gene_family_group_column %||% "")
+    add_param("Gene groups", "Gene family group separator", input$gene_family_column_separator %||% ";  ")
     add_param("Gene groups", "Gene family minimum size", input$gene_family_min_size %||% 3)
     add_param("Gene groups", "Selected gene families", input$gene_family_select %||% "")
     add_param("Gene groups", "Selected custom group", input$gene_group_select %||% "")
@@ -5149,7 +5260,11 @@ server <- function(input, output, session) {
       list(label = paste("GO enrichment", direction), run = function(out_dir) {
         req(rv$de)
         orgdb <- input$go_orgdb %||% "org.At.tair.db"
-        if (!ensure_orgdb_installed(orgdb)) stop("Could not install or load required OrgDb package: ", orgdb)
+        if (go_uses_custom_mapping()) {
+          active_custom_go_map()
+        } else if (!ensure_orgdb_installed(orgdb)) {
+          stop("Could not install or load required OrgDb package: ", orgdb)
+        }
         g <- compute_go_cached(direction)
         rv$go_trigger <- rv$go_trigger + 1
         files <- run_all_write_csv(g, file.path(out_dir, paste0("GO_", direction, "_all_terms.csv")))
@@ -5177,6 +5292,7 @@ server <- function(input, output, session) {
     make_revigo_task <- function(direction) {
       list(label = paste("GO REVIGO-like", direction), run = function(out_dir) {
         req(rv$de)
+        if (go_uses_custom_mapping()) stop("REVIGO-like reduction still uses the OrgDb source. Switch GO annotation source to OrgDb for REVIGO.")
         orgdb <- input$go_orgdb %||% "org.At.tair.db"
         if (!ensure_orgdb_installed(orgdb)) stop("Could not install or load required OrgDb package: ", orgdb)
         direction_label <- switch(direction,
@@ -5437,14 +5553,8 @@ server <- function(input, output, session) {
       }),
       kegg = list(label = "KEGG enrichment", run = function(out_dir) {
         req(rv$de)
-        rv$kegg_enrichment <- run_kegg_enrichment(
-          rv$de,
-          padj_cutoff = input$alpha,
-          lfc_cutoff = input$lfc_cutoff,
-          kegg_species = input$kegg_species %||% "ath",
-          gene_id_type = input$go_keytype %||% NULL,
-          orgdb = input$go_orgdb %||% NULL
-        )
+        rv$kegg_enrichment <- run_active_kegg_enrichment()
+        rv$kegg_enrichment_source <- input$kegg_enrichment_source %||% "gene"
         files <- run_all_write_csv(rv$kegg_enrichment, file.path(out_dir, "KEGG_enrichment.csv"))
         p <- tryCatch(kegg_bubble_reactive(), error = function(e) NULL)
         if (!is.null(p)) files <- c(files, run_all_save_plot(p, run_all_plot_file(out_dir, "KEGG_enrichment_bubble", img_fmt), input$kegg_plot_width, input$kegg_plot_height))
@@ -5452,15 +5562,9 @@ server <- function(input, output, session) {
       }),
       pathview = list(label = "KEGG Pathview map", run = function(out_dir) {
         req(rv$de)
-        if (is.null(rv$kegg_enrichment)) {
-          rv$kegg_enrichment <- run_kegg_enrichment(
-            rv$de,
-            padj_cutoff = input$alpha,
-            lfc_cutoff = input$lfc_cutoff,
-            kegg_species = input$kegg_species %||% "ath",
-            gene_id_type = input$go_keytype %||% NULL,
-            orgdb = input$go_orgdb %||% NULL
-          )
+        if (is.null(rv$kegg_enrichment) || !identical(rv$kegg_enrichment_source %||% "gene", "gene")) {
+          rv$kegg_enrichment <- run_gene_id_kegg_enrichment()
+          rv$kegg_enrichment_source <- "gene"
         }
         sig_paths <- rv$kegg_enrichment[rv$kegg_enrichment$p.value <= input$alpha, , drop = FALSE]
         if (is.null(sig_paths) || nrow(sig_paths) == 0) stop("No KEGG pathways pass the current p-value cutoff for Pathview.")
@@ -5664,7 +5768,7 @@ server <- function(input, output, session) {
       req(rv$annotation_df)
       d <- rv$annotation_df
       d$annotation_key <- NULL
-      write.csv(d, file, row.names = FALSE)
+      write.csv(d, file, row.names = FALSE, na = "")
     }
   )
 
@@ -5672,13 +5776,13 @@ server <- function(input, output, session) {
     filename = function() paste0("annotated_DE_results_", Sys.Date(), ".csv"),
     content = function(file) {
       req(rv$de)
-      write.csv(rv$de, file, row.names = FALSE)
+      write.csv(rv$de, file, row.names = FALSE, na = "")
     }
   )
   
   output$download_search_annotations <- downloadHandler(
     filename = function() paste0("Search_Annotations_", Sys.Date(), ".csv"),
-    content = function(file) { req(rv$de); write.csv(rv$de, file, row.names = FALSE) }
+    content = function(file) { req(rv$de); write.csv(rv$de, file, row.names = FALSE, na = "") }
   )
   
   output$download_norm_counts <- downloadHandler(
@@ -5958,6 +6062,34 @@ server <- function(input, output, session) {
     suppressWarnings(as.integer(rv$selected_tax_id)) %in% c(3702L, 9606L)
   })
 
+
+  gene_family_enrichment_uses_column <- function() identical(input$gene_family_enrichment_source %||% "reference", "column")
+
+  gene_family_enrichment_column_choices <- reactive({
+    req(rv$de)
+    cols <- names(rv$de)
+    exclude <- c("gene_id", "original_gene_id", "log2FoldChange", "padj", "pValue", "baseMean", "DE_class")
+    cols <- setdiff(cols, exclude)
+    cols[vapply(rv$de[cols], function(x) any(nzchar(trimws(as.character(x))), na.rm = TRUE), logical(1))]
+  })
+
+  output$gene_family_enrichment_column_ui <- renderUI({
+    if (!isTRUE(gene_family_enrichment_uses_column())) {
+      return(div(class = "muted", "Uses built-in family reference tables."))
+    }
+    choices <- tryCatch(gene_family_enrichment_column_choices(), error = function(e) character())
+    if (length(choices) == 0) {
+      return(div(class = "muted", "No annotation columns are available in the current DE table."))
+    }
+    selectizeInput(
+      "gene_family_group_column",
+      "Group column",
+      choices = stats::setNames(choices, choices),
+      selected = choices[1],
+      options = list(placeholder = "Select annotation column")
+    )
+  })
+
   gene_family_backend_label <- reactive({
     tax_id <- suppressWarnings(as.integer(rv$selected_tax_id))
     if (identical(tax_id, 3702L)) return("Arabidopsis TAIR gene-family file")
@@ -5977,23 +6109,41 @@ server <- function(input, output, session) {
   })
 
   output$gene_family_enrichment_status_ui <- renderUI({
+    if (isTRUE(gene_family_enrichment_uses_column())) {
+      return(div(class = "muted", "Builds groups from the selected annotation column. Background is genes with a value in that column."))
+    }
     if (isTRUE(gene_family_available())) {
       div(class = "muted", paste0("Uses the ", gene_family_backend_label(), ". If families are not loaded yet, the app loads them when enrichment starts."))
     } else {
-      div(class = "muted", "Gene-family enrichment is available only for Arabidopsis thaliana and Homo sapiens.")
+      div(class = "muted", "Ready-table gene-family enrichment is available only for Arabidopsis thaliana and Homo sapiens.")
     }
   })
-
   output$gene_family_load_ui <- renderUI({
     if (!isTRUE(gene_family_available())) return(div(class = "muted", "Not available"))
     actionButton("run_gene_families", "Load gene families", class = "btn-primary", style = "width:100%;")
   })
 
   output$gene_family_enrichment_run_ui <- renderUI({
+    if (isTRUE(gene_family_enrichment_uses_column())) {
+      choices <- tryCatch(gene_family_enrichment_column_choices(), error = function(e) character())
+      if (length(choices) == 0) return(div(class = "muted", "No group column available."))
+      return(actionButton("run_gene_family_enrichment", "Run group enrichment", class = "btn-primary", style = "width:100%;"))
+    }
     if (!isTRUE(gene_family_available())) return(div(class = "muted", "Not available for selected organism."))
     actionButton("run_gene_family_enrichment", "Run family enrichment", class = "btn-primary", style = "width:100%;")
   })
 
+  observeEvent(input$gene_family_enrichment_source, {
+    rv$gene_family_enrichment <- NULL
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$gene_family_group_column, {
+    rv$gene_family_enrichment <- NULL
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$gene_family_column_separator, {
+    rv$gene_family_enrichment <- NULL
+  }, ignoreInit = TRUE)
   observeEvent(input$run_gene_families, {
     req(rv$de, gene_family_available())
     append_log("Loading gene family reference data for", rv$selected_organism_label, level = "STEP")
@@ -6109,10 +6259,28 @@ server <- function(input, output, session) {
   )
 
   observeEvent(input$run_gene_family_enrichment, {
-    req(rv$de, gene_family_available())
-    append_log("Running gene family enrichment for", rv$selected_organism_label, level = "STEP")
-    withProgress(message = "Running gene family enrichment...", value = 0.5, {
+    req(rv$de)
+    source_mode <- input$gene_family_enrichment_source %||% "reference"
+    append_log("Running gene family/group enrichment for", if (identical(source_mode, "column")) "selected annotation column" else rv$selected_organism_label, level = "STEP")
+    withProgress(message = "Running gene family/group enrichment...", value = 0.5, {
       tryCatch({
+        if (identical(source_mode, "column")) {
+          req(input$gene_family_group_column)
+          res <- run_annotation_column_group_enrichment(
+            rv$de,
+            group_col = input$gene_family_group_column,
+            separator = input$gene_family_column_separator %||% ";  ",
+            direction = input$gene_family_enrichment_direction %||% "up",
+            alpha = input$alpha,
+            lfc_cutoff = input$lfc_cutoff,
+            min_set_size = input$gene_family_min_size %||% 3
+          )
+          rv$gene_family_enrichment <- res
+          append_log("Annotation-column group enrichment completed:", nrow(res), "groups tested from", input$gene_family_group_column)
+          return(invisible(NULL))
+        }
+
+        req(gene_family_available())
         if (is.null(rv$gene_family_context)) {
           incProgress(0.2, detail = "Loading gene family reference data")
           rv$gene_family_context <- setup_gene_family_analysis(
@@ -6138,8 +6306,8 @@ server <- function(input, output, session) {
         rv$gene_family_enrichment <- res
         append_log("Gene family enrichment completed:", nrow(res), "families tested.")
       }, error = function(e) {
-        showNotification(paste("Gene family enrichment error:", e$message), type = "error", duration = 15)
-        append_log("Gene family enrichment error:", e$message)
+        showNotification(paste("Gene family/group enrichment error:", e$message), type = "error", duration = 15)
+        append_log("Gene family/group enrichment error:", e$message)
       })
     })
   })
@@ -6196,21 +6364,98 @@ server <- function(input, output, session) {
     }
   )
 
+  kegg_enrichment_uses_ec <- function() identical(input$kegg_enrichment_source %||% "gene", "ec")
+
+  kegg_ec_column_choices <- reactive({
+    d <- rv$de
+    if (is.null(d) || nrow(d) == 0) return(character())
+    d <- as.data.frame(d, check.names = FALSE)
+    core_cols <- c("gene_id", "original_gene_id", "log2FoldChange", "padj", "pValue", "baseMean", "DE_class")
+    choices <- setdiff(names(d), core_cols)
+    choices <- choices[vapply(d[choices], function(x) any(!is.na(x) & nzchar(trimws(as.character(x)))), logical(1))]
+    ec_like <- choices[grepl("(^|[_. -])(ec|enzyme)($|[_. -])|ec_number|ec\\.number|kegg_ec", choices, ignore.case = TRUE)]
+    unique(c(ec_like, sort(setdiff(choices, ec_like))))
+  })
+
+  output$kegg_ec_column_ui <- renderUI({
+    if (!kegg_enrichment_uses_ec()) {
+      return(div(class = "muted", style = "margin-top: 25px;", "Uses KEGG-compatible gene IDs."))
+    }
+    choices <- kegg_ec_column_choices()
+    if (length(choices) == 0) {
+      return(div(class = "muted", style = "margin-top: 25px;", "No annotation columns are available for EC enrichment."))
+    }
+    selectizeInput("kegg_ec_column", "EC column", choices = choices, selected = choices[1], options = list(placeholder = "Choose EC-number column"))
+  })
+
+  output$kegg_enrichment_status_ui <- renderUI({
+    if (kegg_enrichment_uses_ec()) {
+      div(class = "muted", "EC mode maps parsed EC numbers to KEGG pathways and runs enrichment over genes with EC annotations. Pathview still uses KEGG gene IDs only.")
+    } else {
+      div(class = "muted", "Uses the organism selected in the Organism annotations tab and the current padj/log2FC thresholds. The KEGG code is auto-filled when available.")
+    }
+  })
+
+  observeEvent(input$kegg_enrichment_source, {
+    rv$kegg_enrichment <- NULL
+    rv$kegg_enrichment_source <- NULL
+    rv$kegg_bubble <- NULL
+    rv$pathview_pathway <- NULL
+    rv$pathview_pwid <- NULL
+    rv$pathview_table <- NULL
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$kegg_ec_column, {
+    if (kegg_enrichment_uses_ec()) {
+      rv$kegg_enrichment <- NULL
+      rv$kegg_enrichment_source <- NULL
+      rv$kegg_bubble <- NULL
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$kegg_ec_separator, {
+    if (kegg_enrichment_uses_ec()) {
+      rv$kegg_enrichment <- NULL
+      rv$kegg_enrichment_source <- NULL
+      rv$kegg_bubble <- NULL
+    }
+  }, ignoreInit = TRUE)
+
+  run_gene_id_kegg_enrichment <- function() {
+    run_kegg_enrichment(
+      rv$de,
+      padj_cutoff = input$alpha,
+      lfc_cutoff = input$lfc_cutoff,
+      kegg_species = input$kegg_species %||% "ath",
+      gene_id_type = input$go_keytype %||% NULL,
+      orgdb = input$go_orgdb %||% NULL
+    )
+  }
+
+  run_active_kegg_enrichment <- function() {
+    if (kegg_enrichment_uses_ec()) {
+      req(input$kegg_ec_column)
+      run_kegg_enrichment_from_ec_column(
+        rv$de,
+        ec_col = input$kegg_ec_column,
+        separator = input$kegg_ec_separator %||% ";  ",
+        padj_cutoff = input$alpha,
+        lfc_cutoff = input$lfc_cutoff,
+        kegg_species = input$kegg_species %||% "ath"
+      )
+    } else {
+      run_gene_id_kegg_enrichment()
+    }
+  }
   # ---- KEGG Analysis -------------------------------------------------------
   observeEvent(input$run_kegg, {
     req(rv$de)
     append_log("Running KEGG enrichment for", input$kegg_species %||% "ath", level = "STEP")
     withProgress(message = "Running KEGG Enrichment...", value = 0.3, {
       tryCatch({
-        res <- run_kegg_enrichment(
-          rv$de,
-          padj_cutoff = input$alpha,
-          lfc_cutoff = input$lfc_cutoff,
-          kegg_species = input$kegg_species %||% "ath",
-          gene_id_type = input$go_keytype %||% NULL,
-          orgdb = input$go_orgdb %||% NULL
-        )
+        res <- run_active_kegg_enrichment()
         rv$kegg_enrichment <- res
+        rv$kegg_enrichment_source <- input$kegg_enrichment_source %||% "gene"
         
         incProgress(0.5, detail = "Preparing plot")
         rv$kegg_bubble <- NULL
@@ -6233,6 +6478,7 @@ server <- function(input, output, session) {
     plot_kegg_bubble(
       rv$kegg_enrichment,
       p_value_threshold = input$alpha,
+      top_n = input$kegg_top_n %||% 20,
       color_up = input$color_up %||% "#B2182B",
       color_down = input$color_down %||% "#2166AC",
       plot_theme = input$plot_theme %||% "classic",
@@ -6267,6 +6513,9 @@ server <- function(input, output, session) {
 
   # ---- Pathview Visualization ----------------------------------------------
   output$pathview_selector_ui <- renderUI({
+    if (!is.null(rv$kegg_enrichment_source) && !identical(rv$kegg_enrichment_source, "gene")) {
+      return(div(class = "text-muted", "Pathview uses KEGG gene IDs only. Switch KEGG enrichment to gene-ID mode and rerun enrichment to select pathways here."))
+    }
     req(rv$kegg_enrichment)
     sig_paths <- rv$kegg_enrichment[rv$kegg_enrichment$p.value <= input$alpha, ]
     req(nrow(sig_paths) > 0)

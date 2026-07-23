@@ -128,6 +128,221 @@ map_de_ids_for_kegg <- function(de_df, gene_id_type = NULL, orgdb = NULL) {
   out
 }
 
+normalize_kegg_ec_values <- function(x, separator = ";  ") {
+  x <- as.character(x)
+  x[is.na(x)] <- ""
+  split_one <- function(value) {
+    value <- trimws(value)
+    if (!nzchar(value)) return(character())
+    parts <- if (!is.null(separator) && nzchar(separator)) {
+      unlist(strsplit(value, separator, fixed = TRUE), use.names = FALSE)
+    } else {
+      value
+    }
+    parts <- trimws(parts)
+    parts <- sub("^EC[:[:space:]]*", "", parts, ignore.case = TRUE)
+    parts <- sub("^ec:", "", parts, ignore.case = TRUE)
+    parts <- parts[!is.na(parts) & nzchar(parts)]
+    parts <- parts[grepl("^[0-9]+\\.[0-9-]+\\.[0-9-]+\\.[0-9-]+$", parts)]
+    unique(parts)
+  }
+  lapply(x, split_one)
+}
+
+get_kegg_pathway_names_cached <- function(kegg_species = "ath", cache_file = NULL) {
+  if (is.null(cache_file)) {
+    cache_file <- file.path("kegg_pathway_cache", paste0("kegg_", kegg_species, "_pathway_names_cache.rds"))
+  }
+  if (file.exists(cache_file)) {
+    return(readRDS(cache_file))
+  }
+
+  pathways.list <- KEGGREST::keggList("pathway", kegg_species)
+  pathway.codes <- sub("path:", "", names(pathways.list))
+  pathway.names <- as.character(pathways.list)
+  pathway.names <- sub(" - .*", "", pathway.names)
+  names(pathway.names) <- pathway.codes
+
+  tryCatch({
+    dir.create(dirname(cache_file), showWarnings = FALSE, recursive = TRUE)
+    saveRDS(pathway.names, cache_file)
+  }, error = function(e) warning("Could not save KEGG pathway-name cache: ", e$message))
+  pathway.names
+}
+
+get_kegg_ec_pathways_cached <- function(kegg_species = "ath", cache_file = NULL) {
+  if (is.null(cache_file)) {
+    cache_file <- file.path("kegg_ec_pathway_cache", paste0("kegg_", kegg_species, "_ec_pathway_cache.rds"))
+  }
+  if (file.exists(cache_file)) {
+    return(readRDS(cache_file))
+  }
+
+  pathway.names <- get_kegg_pathway_names_cached(kegg_species = kegg_species)
+  organism_pathways <- names(pathway.names)
+  organism_pathway_by_number <- stats::setNames(organism_pathways, sub("^[A-Za-z]+", "", organism_pathways))
+
+  links <- KEGGREST::keggLink("pathway", "enzyme")
+  if (is.null(links) || length(links) == 0) {
+    stop("KEGG returned no EC-to-pathway links.")
+  }
+
+  link_names <- names(links)
+  link_values <- as.character(links)
+  if (mean(grepl("^path:", link_names, ignore.case = TRUE)) > mean(grepl("^path:", link_values, ignore.case = TRUE))) {
+    pathway_raw <- link_names
+    ec_raw <- link_values
+  } else {
+    ec_raw <- link_names
+    pathway_raw <- link_values
+  }
+  ec_ids <- sub("^(ec|enzyme):", "", ec_raw, ignore.case = TRUE)
+  pathway_ids <- sub("^path:", "", pathway_raw, ignore.case = TRUE)
+  pathway_numbers <- sub("^[A-Za-z]+", "", pathway_ids)
+  organism_codes <- unname(organism_pathway_by_number[pathway_numbers])
+
+  out <- data.frame(
+    EC = ec_ids,
+    pathway.code = organism_codes,
+    stringsAsFactors = FALSE
+  )
+  out <- out[!is.na(out$EC) & nzchar(out$EC) & !is.na(out$pathway.code) & nzchar(out$pathway.code), , drop = FALSE]
+  out <- unique(out)
+
+  tryCatch({
+    dir.create(dirname(cache_file), showWarnings = FALSE, recursive = TRUE)
+    saveRDS(out, cache_file)
+  }, error = function(e) warning("Could not save KEGG EC pathway cache: ", e$message))
+  out
+}
+
+run_kegg_enrichment_from_ec_column <- function(de_df, ec_col, separator = ";  ", pvalue_cutoff = 0.05,
+                                               lfc_cutoff = 0, kegg_species = "ath",
+                                               padj_cutoff = pvalue_cutoff, min_pathway_size = 3,
+                                               ec_pathway_map = NULL, pathway_names = NULL) {
+  if (is.null(de_df) || nrow(de_df) == 0) stop("No DE table loaded.")
+  if (!"gene_id" %in% names(de_df)) stop("DE table must contain a gene_id column.")
+  if (is.null(ec_col) || !nzchar(ec_col) || !ec_col %in% names(de_df)) stop("Select a valid EC-number column.")
+  if (!"pValue" %in% names(de_df)) de_df$pValue <- de_df$padj
+  if (!"padj" %in% names(de_df)) de_df$padj <- de_df$pValue
+  required_cols <- c("gene_id", "pValue", "padj", "log2FoldChange")
+  missing_cols <- setdiff(required_cols, names(de_df))
+  if (length(missing_cols) > 0) stop("Missing required columns: ", paste(missing_cols, collapse = ", "))
+
+  lfc_cutoff <- suppressWarnings(as.numeric(lfc_cutoff %||% 0))
+  if (!is.finite(lfc_cutoff) || is.na(lfc_cutoff)) lfc_cutoff <- 0
+  lfc_cutoff <- abs(lfc_cutoff)
+  padj_cutoff <- suppressWarnings(as.numeric(padj_cutoff %||% pvalue_cutoff))
+  if (!is.finite(padj_cutoff) || is.na(padj_cutoff)) padj_cutoff <- pvalue_cutoff
+  min_pathway_size <- suppressWarnings(as.integer(min_pathway_size %||% 3))
+  if (!is.finite(min_pathway_size) || is.na(min_pathway_size) || min_pathway_size < 1) min_pathway_size <- 3
+
+  original_n <- nrow(de_df)
+  de_df$gene_id <- as.character(de_df$gene_id)
+  de_df$pValue <- suppressWarnings(as.numeric(de_df$pValue))
+  de_df$padj <- suppressWarnings(as.numeric(de_df$padj))
+  de_df$log2FoldChange <- suppressWarnings(as.numeric(de_df$log2FoldChange))
+
+  ec_list <- normalize_kegg_ec_values(de_df[[ec_col]], separator = separator)
+  has_ec <- lengths(ec_list) > 0
+  de_df <- de_df[has_ec & !is.na(de_df$gene_id) & nzchar(de_df$gene_id) &
+                   !is.na(de_df$pValue) & !is.na(de_df$padj) & !is.na(de_df$log2FoldChange), , drop = FALSE]
+  ec_list <- ec_list[has_ec]
+  if (nrow(de_df) == 0 || length(ec_list) == 0) stop("No genes with valid EC numbers were found in the selected column.")
+
+  ord <- order(de_df$pValue, na.last = TRUE)
+  de_df <- de_df[ord, , drop = FALSE]
+  ec_list <- ec_list[ord]
+  keep_first <- !duplicated(de_df$gene_id)
+  de_df <- de_df[keep_first, , drop = FALSE]
+  ec_list <- ec_list[keep_first]
+
+  gene_ec <- data.frame(
+    gene_id = rep(de_df$gene_id, lengths(ec_list)),
+    EC = unlist(ec_list, use.names = FALSE),
+    stringsAsFactors = FALSE
+  )
+  gene_ec <- unique(gene_ec[!is.na(gene_ec$EC) & nzchar(gene_ec$EC), , drop = FALSE])
+  if (nrow(gene_ec) == 0) stop("No valid EC numbers were found after parsing the selected column.")
+
+  if (is.null(pathway_names)) pathway_names <- get_kegg_pathway_names_cached(kegg_species = kegg_species)
+  if (is.null(ec_pathway_map)) ec_pathway_map <- get_kegg_ec_pathways_cached(kegg_species = kegg_species)
+  ec_pathway_map <- ec_pathway_map[ec_pathway_map$EC %in% gene_ec$EC, , drop = FALSE]
+  ec_pathway_map <- ec_pathway_map[ec_pathway_map$pathway.code %in% names(pathway_names), , drop = FALSE]
+  if (nrow(ec_pathway_map) == 0) {
+    stop("No overlap between parsed EC numbers and KEGG ", kegg_species, " pathways.")
+  }
+
+  gene_pathway <- unique(dplyr::inner_join(gene_ec, ec_pathway_map, by = "EC"))
+  if (nrow(gene_pathway) == 0) {
+    stop("No genes could be linked to KEGG pathways through the selected EC column.")
+  }
+
+  geneList <- de_df$pValue
+  names(geneList) <- de_df$gene_id
+  padjList <- de_df$padj
+  names(padjList) <- de_df$gene_id
+  lfcList <- de_df$log2FoldChange
+  names(lfcList) <- de_df$gene_id
+
+  overlap_genes <- length(intersect(names(geneList), gene_pathway$gene_id))
+  overlap_ec <- length(unique(gene_pathway$EC))
+
+  res_list <- lapply(sort(unique(gene_pathway$pathway.code)), function(pathway) {
+    pathway_rows <- gene_pathway[gene_pathway$pathway.code == pathway, , drop = FALSE]
+    list.genes.in.pathway <- intersect(names(geneList), unique(pathway_rows$gene_id))
+    if (length(list.genes.in.pathway) < min_pathway_size) return(NULL)
+
+    list.genes.not.in.pathway <- setdiff(names(geneList), list.genes.in.pathway)
+    if (length(list.genes.not.in.pathway) < min_pathway_size) return(NULL)
+
+    scores.in.pathway <- geneList[list.genes.in.pathway]
+    scores.not.in.pathway <- geneList[list.genes.not.in.pathway]
+    p.value <- suppressWarnings(
+      wilcox.test(scores.in.pathway, scores.not.in.pathway, alternative = "less")$p.value
+    )
+
+    sig_genes <- list.genes.in.pathway[
+      padjList[list.genes.in.pathway] < padj_cutoff &
+        abs(lfcList[list.genes.in.pathway]) >= lfc_cutoff
+    ]
+    if (lfc_cutoff > 0) {
+      up_genes <- sum(lfcList[sig_genes] >= lfc_cutoff, na.rm = TRUE)
+      down_genes <- sum(lfcList[sig_genes] <= -lfc_cutoff, na.rm = TRUE)
+    } else {
+      up_genes <- sum(lfcList[sig_genes] > 0, na.rm = TRUE)
+      down_genes <- sum(lfcList[sig_genes] < 0, na.rm = TRUE)
+    }
+
+    data.frame(
+      pathway.code = pathway,
+      pathway.name = pathway_names[pathway] %||% pathway,
+      p.value = p.value,
+      Significant = length(sig_genes),
+      Upregulated = up_genes,
+      Downregulated = down_genes,
+      Annotated = length(list.genes.in.pathway),
+      Annotated_EC_numbers = length(unique(pathway_rows$EC)),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  outdat <- do.call(rbind, res_list)
+  if (is.null(outdat) || nrow(outdat) == 0) return(NULL)
+
+  outdat <- outdat[order(outdat$p.value), ]
+  outdat$Gene_ID_type <- "EC_column"
+  outdat$EC_column <- ec_col
+  outdat$EC_separator <- separator
+  outdat$Mapped_gene_ids <- length(unique(de_df$gene_id))
+  outdat$KEGG_overlap_gene_ids <- overlap_genes
+  outdat$KEGG_overlap_EC_numbers <- overlap_ec
+  outdat$Input_rows <- original_n
+  outdat$padj_cutoff <- padj_cutoff
+  outdat$lfc_cutoff <- lfc_cutoff
+  rownames(outdat) <- NULL
+  outdat
+}
 
 ########################################################
 # 2. Run Wilcoxon Enrichment Test
@@ -236,19 +451,21 @@ run_kegg_enrichment <- function(de_df, pvalue_cutoff = 0.05, lfc_cutoff = 0, keg
 ########################################################
 # 3. Bubble Plot for Enriched Pathways
 ########################################################
-plot_kegg_bubble <- function(kegg_res_df, p_value_threshold = 0.05,
+plot_kegg_bubble <- function(kegg_res_df, p_value_threshold = 0.05, top_n = 20,
                              color_up = "#B2182B", color_down = "#2166AC",
                              plot_theme = "classic", font_family = "serif") {
   if (is.null(kegg_res_df) || nrow(kegg_res_df) == 0) return(NULL)
+  top_n <- suppressWarnings(as.integer(top_n %||% 20))
+  if (!is.finite(top_n) || is.na(top_n) || top_n < 1) top_n <- 20
   
   plot_df <- kegg_res_df[kegg_res_df$p.value <= p_value_threshold, ]
   if (nrow(plot_df) == 0) return(NULL)
   
   up_df <- plot_df[plot_df$Upregulated > 0, ]
-  if (nrow(up_df) > 20) up_df <- head(up_df, 20)
+  if (nrow(up_df) > top_n) up_df <- head(up_df, top_n)
   
   down_df <- plot_df[plot_df$Downregulated > 0, ]
-  if (nrow(down_df) > 20) down_df <- head(down_df, 20)
+  if (nrow(down_df) > top_n) down_df <- head(down_df, top_n)
   
   if (nrow(up_df) == 0 && nrow(down_df) == 0) return(NULL)
   

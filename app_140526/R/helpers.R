@@ -1883,6 +1883,58 @@ detect_go_bp_col <- function(df) {
   if (length(hit)) return(nms[hit[1]])
   NULL
 }
+go_term_ontology <- function(go_ids) {
+  go_ids <- toupper(trimws(as.character(go_ids)))
+  vapply(go_ids, function(go_id) {
+    tryCatch(GO.db::GOTERM[[go_id]]@Ontology, error = function(e) NA_character_)
+  }, character(1), USE.NAMES = FALSE)
+}
+
+normalize_custom_go_mapping <- function(go_map) {
+  if (is.null(go_map)) return(NULL)
+  go_map <- as.data.frame(go_map, check.names = FALSE)
+  if (ncol(go_map) < 2) {
+    stop("Custom GO table must contain at least two columns: gene ID and GO IDs.")
+  }
+
+  gene_ids <- clean_gene_id(go_map[[1]])
+  go_text <- as.character(go_map[[2]])
+  split_go <- strsplit(go_text, ";", fixed = TRUE)
+  counts <- lengths(split_go)
+  out <- data.frame(
+    gene_id = rep(gene_ids, counts),
+    GO_ID = toupper(trimws(unlist(split_go, use.names = FALSE))),
+    stringsAsFactors = FALSE
+  )
+  out$gene_id <- clean_gene_id(out$gene_id)
+  out$.go_lookup_key <- clean_gene_id(out$gene_id)
+  out <- out[!is.na(out$.go_lookup_key) & nzchar(out$.go_lookup_key) &
+               !is.na(out$GO_ID) & grepl("^GO:[0-9]{7}$", out$GO_ID), , drop = FALSE]
+  out <- out[!duplicated(out[, c(".go_lookup_key", "GO_ID"), drop = FALSE]), , drop = FALSE]
+  if (nrow(out) == 0) {
+    stop("No valid GO annotations were found. GO IDs must look like GO:0000000 and multiple IDs must be separated by semicolons.")
+  }
+  rownames(out) <- NULL
+  out
+}
+
+load_custom_go_mapping <- function(path, source_name = path) {
+  normalize_custom_go_mapping(read_any_table(path, source_name = source_name))
+}
+
+custom_go_mapping_for_ontology <- function(custom_go_map, ontology = "BP") {
+  if (is.null(custom_go_map) || nrow(custom_go_map) == 0) {
+    stop("Upload a custom GO annotation table before running GO analysis with the uploaded-table source.")
+  }
+  if (!requireNamespace("GO.db", quietly = TRUE)) stop("Package GO.db is required for custom GO table ontology filtering.")
+  custom_go_map <- normalize_custom_go_mapping(custom_go_map)
+  custom_go_map$Ontology <- go_term_ontology(custom_go_map$GO_ID)
+  custom_go_map <- custom_go_map[!is.na(custom_go_map$Ontology) & custom_go_map$Ontology == ontology, , drop = FALSE]
+  if (nrow(custom_go_map) == 0) {
+    stop("No ", ontology, " GO annotations were found in the uploaded custom GO table.")
+  }
+  custom_go_map
+}
 
 add_go_bp_column <- function(df, orgdb = "org.At.tair.db", keytype = "TAIR") {
   bp_col <- detect_go_bp_col(df)
@@ -1913,14 +1965,51 @@ add_go_bp_column <- function(df, orgdb = "org.At.tair.db", keytype = "TAIR") {
 
 run_topgo_enrichment <- function(de_df, direction = c("up", "down", "all"), ontology = "BP", alpha = 0.05, lfc_cutoff = 1,
                                  p_cutoff = 0.01, algorithm = "weight01", statistic = "fisher",
-                                 orgdb = "org.At.tair.db", topgo_id = "entrez", keytype = NULL) {
+                                 orgdb = "org.At.tair.db", topgo_id = "entrez", keytype = NULL,
+                                 custom_go_map = NULL) {
   direction <- match.arg(direction)
-  required <- c("topGO", "GO.db", "AnnotationDbi", orgdb)
+  required <- if (is.null(custom_go_map)) c("topGO", "GO.db", "AnnotationDbi", orgdb) else c("topGO", "GO.db")
   missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) stop("Missing required packages: ", paste(missing, collapse = ", "))
   suppressPackageStartupMessages(library(topGO))
   suppressPackageStartupMessages(library(GO.db))
   de_df <- classify_de(de_df, alpha = alpha, lfc_cutoff = lfc_cutoff)
+
+  if (!is.null(custom_go_map)) {
+    bg <- unique(clean_gene_id(de_df$gene_id))
+    bg <- bg[!is.na(bg) & nzchar(bg)]
+    if (direction == "up") interesting <- unique(de_df$gene_id[de_df$DE_class == "up"])
+    if (direction == "down") interesting <- unique(de_df$gene_id[de_df$DE_class == "down"])
+    if (direction == "all") interesting <- unique(de_df$gene_id[de_df$DE_class %in% c("up", "down")])
+    interesting <- intersect(clean_gene_id(interesting), bg)
+    if (length(interesting) < 2) stop("Too few significant genes for GO enrichment in this direction.")
+
+    annot <- custom_go_mapping_for_ontology(custom_go_map, ontology = ontology)
+    annot <- annot[annot$.go_lookup_key %in% bg, , drop = FALSE]
+    if (nrow(annot) == 0) {
+      stop("No ", ontology, " GO annotations from the uploaded table matched the loaded genes.")
+    }
+    gene2go <- split(as.character(annot$GO_ID), as.character(annot$.go_lookup_key))
+
+    geneList <- factor(as.integer(bg %in% interesting))
+    names(geneList) <- bg
+    GOdata <- methods::new("topGOdata", ontology = ontology, allGenes = geneList,
+                           geneSelectionFun = function(x) x == 1,
+                           annot = get("annFUN.gene2GO", envir = asNamespace("topGO")), gene2GO = gene2go)
+    result <- topGO::runTest(GOdata, algorithm = algorithm, statistic = statistic)
+    all_res <- topGO::GenTable(GOdata, pValue = result, topNodes = length(result@score))
+    all_res$pValue_num <- as_numeric_p(all_res$pValue)
+    all_res$Significant <- suppressWarnings(as.numeric(all_res$Significant))
+    all_res$Expected <- suppressWarnings(as.numeric(all_res$Expected))
+    all_res$FoldEnrichment <- all_res$Significant / pmax(all_res$Expected, 1e-12)
+    all_res$Direction <- direction
+    all_res$Ontology <- ontology
+    all_res$Annotation_source <- "Uploaded GO table"
+    all_res <- all_res[order(all_res$pValue_num), , drop = FALSE]
+    sig <- all_res[!is.na(all_res$pValue_num) & all_res$pValue_num <= p_cutoff, , drop = FALSE]
+    return(sig)
+  }
+
   keytype <- toupper(keytype %||% switch(tolower(topgo_id %||% "entrez"),
     entrez = "ENTREZID",
     symbol = "SYMBOL",
@@ -1966,6 +2055,7 @@ run_topgo_enrichment <- function(de_df, direction = c("up", "down", "all"), onto
   all_res$FoldEnrichment <- all_res$Significant / pmax(all_res$Expected, 1e-12)
   all_res$Direction <- direction
   all_res$Ontology <- ontology
+  all_res$Annotation_source <- orgdb
   all_res <- all_res[order(all_res$pValue_num), , drop = FALSE]
   sig <- all_res[!is.na(all_res$pValue_num) & all_res$pValue_num <= p_cutoff, , drop = FALSE]
   sig
@@ -1980,13 +2070,41 @@ parse_go_ids <- function(go_ids) {
 }
 
 make_go_gene_table <- function(de_df, go_ids, ontology = "BP", orgdb = "org.At.tair.db",
-                               keytype = "TAIR", alpha = 0.05, lfc_cutoff = 1) {
+                               keytype = "TAIR", alpha = 0.05, lfc_cutoff = 1,
+                               custom_go_map = NULL) {
   go_ids <- parse_go_ids(go_ids)
-  required <- c("AnnotationDbi", "GO.db", orgdb)
+  required <- if (is.null(custom_go_map)) c("AnnotationDbi", "GO.db", orgdb) else "GO.db"
   missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) stop("Missing required packages: ", paste(missing, collapse = ", "))
 
   de_df <- classify_de(de_df, alpha = alpha, lfc_cutoff = lfc_cutoff)
+
+  if (!is.null(custom_go_map)) {
+    de_df$.go_lookup_key <- clean_gene_id(de_df$gene_id)
+    lookup_keys <- unique(de_df$.go_lookup_key)
+    lookup_keys <- lookup_keys[!is.na(lookup_keys) & nzchar(lookup_keys)]
+    if (length(lookup_keys) == 0) stop("No usable gene IDs were found for GO matching.")
+
+    annot <- custom_go_mapping_for_ontology(custom_go_map, ontology = ontology)
+    annot <- annot[annot$.go_lookup_key %in% lookup_keys & annot$GO_ID %in% go_ids, c(".go_lookup_key", "GO_ID"), drop = FALSE]
+    if (nrow(annot) == 0) return(data.frame())
+    annot <- annot[!duplicated(annot[, c(".go_lookup_key", "GO_ID"), drop = FALSE]), , drop = FALSE]
+
+    term_map <- tryCatch({
+      ids <- unique(annot$GO_ID)
+      stats::setNames(vapply(ids, go_term_title, character(1)), ids)
+    }, error = function(e) character())
+
+    out <- merge(de_df, annot, by = ".go_lookup_key", all.x = FALSE, sort = FALSE)
+    out$GO_term <- unname(term_map[as.character(out$GO_ID)])
+    out$GO_term[is.na(out$GO_term) | !nzchar(out$GO_term)] <- out$GO_ID[is.na(out$GO_term) | !nzchar(out$GO_term)]
+    out$.go_lookup_key <- NULL
+    out <- out[order(out$GO_ID, out$padj, out$pValue, na.last = TRUE), , drop = FALSE]
+    out <- out[!duplicated(out[, intersect(c("gene_id", "GO_ID"), names(out)), drop = FALSE]), , drop = FALSE]
+    rownames(out) <- NULL
+    return(out)
+  }
+
   keytype <- toupper(keytype %||% "TAIR")
   orgdb_obj <- getExportedValue(orgdb, orgdb)
   available_keytypes <- AnnotationDbi::keytypes(orgdb_obj)
@@ -2876,6 +2994,81 @@ setup_gene_family_analysis <- function(de_df, tax_id = 3702, alpha = 0.05, lfc_c
   stop("Gene-family analysis is available only for Arabidopsis thaliana and Homo sapiens.")
 }
 
+run_annotation_column_group_enrichment <- function(de_df, group_col, separator = ";  ",
+                                                   direction = c("up", "down", "all"),
+                                                   alpha = 0.05, lfc_cutoff = 1, min_set_size = 3,
+                                                   p_adjust_method = "BH") {
+  direction <- match.arg(direction)
+  de_df <- as.data.frame(de_df, check.names = FALSE)
+  if (is.null(group_col) || !nzchar(group_col) || !group_col %in% names(de_df)) {
+    stop("Select a valid annotation column for group enrichment.")
+  }
+  if (!"gene_id" %in% names(de_df)) stop("DE table is missing gene_id.")
+  if (!all(c("log2FoldChange", "padj") %in% names(de_df))) {
+    stop("DE table must include log2FoldChange and padj for group enrichment.")
+  }
+
+  de_df <- classify_de(de_df, alpha = alpha, lfc_cutoff = lfc_cutoff)
+  de_df$.group_gene_id <- clean_gene_id(de_df$gene_id)
+  group_text <- as.character(de_df[[group_col]])
+  group_text[is.na(group_text)] <- ""
+  annotated <- nzchar(trimws(group_text)) & !is.na(de_df$.group_gene_id) & nzchar(de_df$.group_gene_id)
+  if (!any(annotated)) stop("No genes have values in the selected annotation column.")
+
+  sep <- as.character(separator %||% ";  ")
+  if (!nzchar(sep)) sep <- ";  "
+  split_values <- strsplit(group_text[annotated], sep, fixed = TRUE)
+  counts <- lengths(split_values)
+  group_map <- data.frame(
+    gene_id = rep(de_df$.group_gene_id[annotated], counts),
+    Group = trimws(unlist(split_values, use.names = FALSE)),
+    stringsAsFactors = FALSE
+  )
+  group_map <- group_map[!is.na(group_map$gene_id) & nzchar(group_map$gene_id) &
+                           !is.na(group_map$Group) & nzchar(group_map$Group), , drop = FALSE]
+  group_map <- group_map[!duplicated(group_map[, c("gene_id", "Group"), drop = FALSE]), , drop = FALSE]
+  if (nrow(group_map) == 0) stop("No usable groups were found after splitting the selected annotation column.")
+
+  universe <- unique(group_map$gene_id)
+  if (direction == "up") interesting <- de_df$.group_gene_id[de_df$DE_class == "up"]
+  if (direction == "down") interesting <- de_df$.group_gene_id[de_df$DE_class == "down"]
+  if (direction == "all") interesting <- de_df$.group_gene_id[de_df$DE_class %in% c("up", "down")]
+  interesting <- intersect(unique(interesting[!is.na(interesting) & nzchar(interesting)]), universe)
+  if (length(interesting) < 2) stop("Too few significant genes with selected-column group annotations.")
+
+  sets <- split(group_map$gene_id, group_map$Group)
+  rows <- lapply(names(sets), function(group_name) {
+    set_genes <- intersect(unique(sets[[group_name]]), universe)
+    set_size <- length(set_genes)
+    if (set_size < min_set_size) return(NULL)
+    a <- length(intersect(set_genes, interesting))
+    if (a == 0) return(NULL)
+    b <- set_size - a
+    c <- length(setdiff(interesting, set_genes))
+    d <- max(length(universe) - a - b - c, 0)
+    ft <- stats::fisher.test(matrix(c(a, b, c, d), nrow = 2, byrow = TRUE), alternative = "greater")
+    data.frame(
+      Gene_Family = group_name,
+      Direction = direction,
+      Significant = a,
+      Annotated = set_size,
+      Significant_total = length(interesting),
+      Background_total = length(universe),
+      FoldEnrichment = (a / max(length(interesting), 1)) / (set_size / max(length(universe), 1)),
+      p.value = ft$p.value,
+      Genes = paste(sort(intersect(set_genes, interesting)), collapse = "; "),
+      Source_column = group_col,
+      stringsAsFactors = FALSE
+    )
+  })
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (length(rows) == 0) stop("No selected-column groups overlap the significant genes after size filtering.")
+  out <- do.call(rbind, rows)
+  out$p.adjusted <- stats::p.adjust(out$p.value, method = p_adjust_method)
+  out <- out[order(out$p.adjusted, out$p.value), , drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
 run_gene_family_enrichment <- function(de_df, tax_id = 3702, direction = c("up", "down", "all"),
                                        alpha = 0.05, lfc_cutoff = 1, min_set_size = 3,
                                        gene_id_type = "TAIR", orgdb = "org.At.tair.db",
@@ -3477,7 +3670,11 @@ download_plot_server <- function(plot_reactive, format_reactive, filename_prefix
         ggplot2::ggsave(file, plot = plot_reactive(),
                         width = w_in, height = h_in, units = "in", dpi = 96, bg = "white")
       } else if (fmt == "svg") {
-        grDevices::svg(filename = file, width = w_in, height = h_in, bg = "white")
+        if (requireNamespace("svglite", quietly = TRUE)) {
+          svglite::svglite(file = file, width = w_in, height = h_in, bg = "white")
+        } else {
+          grDevices::svg(filename = file, width = w_in, height = h_in, bg = "white")
+        }
         print(plot_reactive())
         grDevices::dev.off()
       } else if (fmt == "pdf") {
